@@ -86,7 +86,7 @@ class TabularQFunction:
 
     def forward(self, x):
         if isinstance(x, np.ndarray):
-            x = str(x.astype(np.int))
+            x = str(x.astype(int))
         if x not in self.q_func:
             self.q_func[x] = np.zeros(self.num_actions, dtype=np.float32)
         return self.q_func[x]

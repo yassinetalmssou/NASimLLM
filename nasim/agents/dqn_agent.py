@@ -25,6 +25,7 @@ your own agents.
 """
 import random
 from pprint import pprint
+import sys
 
 from gymnasium import error
 import numpy as np
