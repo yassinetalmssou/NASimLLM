@@ -43,6 +43,13 @@ docs/_build/
 nasim/agents/runs
 runs/
 models/
+llm_weights/
+
+# Large binary / model files
+*.safetensors
+*.bin
+*.pt
+*.pth
 
 .ipynb_checkpoints/
 
@@ -50,3 +57,4 @@ models/
 
 .vscode/
 
+.venv/

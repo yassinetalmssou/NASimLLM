@@ -41,8 +41,26 @@ try:
             )
 
             choice = resp.choices[0]
-            content = getattr(choice.message, "content", None) or choice.message.get("content")
-            return (content or "").strip()
+            content = getattr(choice.message, "content", None)
+            if content is None and hasattr(choice.message, "get"):
+                content = choice.message.get("content")
+
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if text:
+                            parts.append(str(text))
+                content = "".join(parts)
+
+            if content is None:
+                content = ""
+
+            if not isinstance(content, str):
+                content = str(content)
+
+            return content.strip()
 
 except Exception as e:  
     class LLMAPIClient:  
