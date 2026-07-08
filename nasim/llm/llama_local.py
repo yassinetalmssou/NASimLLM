@@ -41,6 +41,12 @@ try:
             if not self.has_cuda and quant_config is None:
                 self.model.to("cpu")
 
+        def _is_qwen3(self) -> bool:
+            cfg = getattr(self.model, "config", None)
+            arch = getattr(cfg, "architectures", [])
+            model_type = getattr(cfg, "model_type", "")
+            return "Qwen3ForCausalLM" in arch or model_type == "qwen3"
+
         def chat(
             self,
             user_msg: str,
@@ -54,11 +60,11 @@ try:
                 messages.append({"role": "system", "content": system_msg})
             messages.append({"role": "user", "content": user_msg})
 
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            template_kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if self._is_qwen3():
+                template_kwargs["enable_thinking"] = False
+
+            prompt = self.tokenizer.apply_chat_template(messages, **template_kwargs)
             inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
             with torch.no_grad():
@@ -74,7 +80,7 @@ try:
             generated_tokens = output_ids[0, inputs["input_ids"].shape[1]:]
             return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
-except Exception as e:  # pragma: no cover - missing deps
+except Exception as e:
     class LocalLlama31:
         def __init__(self, *args, **kwargs):
             raise ImportError(

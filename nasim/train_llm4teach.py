@@ -13,7 +13,6 @@ import nasim
 from nasim.agents.llm4teach_agent import LLM4TeachAgent, action_to_option_id
 from nasim.llm.llm4teach_advisor import LLM4TeachAdvisor
 from nasim.envs.observation import Observation
-from nasim.envs.render import Viewer
 from prettytable import PrettyTable
 
 try:
@@ -68,7 +67,7 @@ class LLM4TeachTrainer:
                  force_llm: bool = False,
                  prompt_variant: str = "structured",
                  verbose: bool = True,
-                 llama_model: str = "meta-llama/Llama-3.1-8B-Instruct",
+                 llama_model: str = "llm_weights/Qwen3-4B",
                  use_local_llama: bool = True,
                  llama_use_4bit: bool = True,
                  fully_obs: bool = True,
@@ -78,7 +77,13 @@ class LLM4TeachTrainer:
                  lambda_min: float = 0.005,
                  competence_window: int = 10,
                  llm_mix_weight: float = 0.3,
-                 csv_log: Optional[str] = None):
+                 teacher_temp: float = 2.0,
+                 csv_log: Optional[str] = None,
+                 use_history_mechanism: bool = True,
+                 use_avoidlist: bool = True,
+                 use_compact_prompt: bool = True,
+                 llm_call_frequency: str = "every_step",
+                 condition: str = ""):
         
         self.scenario_name = scenario
         self.seed = int(seed)
@@ -103,8 +108,19 @@ class LLM4TeachTrainer:
         self.kl_target = kl_target
         self.lambda_min = lambda_min
         self.competence_window = competence_window
-        self.current_lambda = lambda_start  # updated each episode in adaptive modes
-        self.llm_mix_weight = llm_mix_weight  # max fraction of LLM in option sampling
+        self.current_lambda = lambda_start
+        self.llm_mix_weight = llm_mix_weight
+        self.teacher_temp = teacher_temp
+        
+        self.use_history_mechanism = use_history_mechanism
+        self.use_avoidlist = use_avoidlist
+        self.use_compact_prompt = use_compact_prompt
+        self.llm_call_frequency = llm_call_frequency
+        # Resolve condition label for config.json (auto-detect if blank)
+        if condition:
+            self.condition = condition
+        else:
+            self.condition = "llm_full" if use_llm else "ppo_options"
 
         if csv_log:
             self.csv_log_path = Path(csv_log)
@@ -132,11 +148,6 @@ class LLM4TeachTrainer:
         
         obs, _ = self.env.reset()
         self.state_dim = obs.shape[0]
-        logger.info(f"State dim: {self.state_dim}, Num actions: {len(self.action_list)}")
-        
-        self.renderer = Viewer(self.env.network)
-        
-        logger.info(f"Initializing LLM4Teach agent (hidden_dim={hidden_dim})")
         self.agent = LLM4TeachAgent(
             state_dim=self.state_dim,
             action_list=self.action_list,
@@ -148,6 +159,7 @@ class LLM4TeachTrainer:
             gae_lambda=gae_lambda,
         )
         
+        self.llm_advisor = None  # default; set below if LLM is enabled
         if self.use_llm:
             llm_client = None
             
@@ -155,7 +167,6 @@ class LLM4TeachTrainer:
                 if LLAMA_LOCAL_AVAILABLE:
                     model_path = self.llama_model
                     if not Path(model_path).is_absolute():
-                        # Assume path is relative to workspace root
                         model_path = str(Path(__file__).parent.parent / model_path)
                     
                     logger.info(
@@ -178,8 +189,6 @@ class LLM4TeachTrainer:
             if llm_client is None:
                 logger.warning("No LLM client available. LLM teacher disabled.")
 
-            # If there is no usable LLM client, disable teacher distillation entirely.
-            # Distilling from a uniform distribution tends to hurt learning.
             if llm_client is None:
                 self.use_llm = False
                 self.llm_advisor = None
@@ -188,7 +197,9 @@ class LLM4TeachTrainer:
                     llm_client=llm_client,
                     use_cache=True,
                     force_call=force_llm,
-                    prompt_variant=prompt_variant,
+                    use_history=self.use_history_mechanism,
+                    use_avoidlist=self.use_avoidlist,
+                    use_compact_prompt=self.use_compact_prompt,
                 )
         
         if self.save_dir:
@@ -231,65 +242,44 @@ class LLM4TeachTrainer:
 
     def summarize_state(self, state: np.ndarray):
 
-        try:
-            state_shape = self.env.current_state.shape()
-            num_hosts = state_shape[0]
-            features_per_host = state_shape[1]
-            
-            # Total obs includes hosts + 1 auxiliary row
-            expected_obs_rows = num_hosts + 1
-            expected_total_size = expected_obs_rows * features_per_host
-            
-            # Validate observation size
-            if state.size != expected_total_size:
-                raise ValueError(
-                    f"Observation size mismatch: got {state.size}, "
-                    f"expected {expected_total_size} "
-                    f"(({num_hosts}+1) hosts × {features_per_host} features)"
-                )
-            
-            # Reshape to 2D: (num_hosts+1, features_per_host)
-            if len(state.shape) == 1:
-                state_2d = state.reshape(expected_obs_rows, features_per_host)
-            else:
-                state_2d = state
-            
-            # Create Observation object (like demo.py uses internally)
-            obs_obj = Observation.from_numpy(state_2d, state_shape)
-            host_obs, aux_obs = obs_obj.get_readable()
-            
-        except Exception as e:
-            # Fall back to simple numeric summary if parsing fails
-            logger.warning(f"Failed to parse observation: {e}")
-            return (
-                f"Obs len={len(state)}, sum={state.sum():.3f}, "
-                f"min={state.min():.3f}, max={state.max():.3f}",
-                None,
-                None,
-            )
+        state_shape = self.env.current_state.shape()
+        num_hosts = state_shape[0]
+        features_per_host = state_shape[1]
 
-        # Build summary for LLM
+        expected_obs_rows = num_hosts + 1
+        expected_total_size = expected_obs_rows * features_per_host
+
+        assert state.size == expected_total_size, (
+            f"Observation size mismatch: got {state.size}, "
+            f"expected {expected_total_size} "
+            f"(({num_hosts}+1) hosts x {features_per_host} features)"
+        )
+
+        if len(state.shape) == 1:
+            state_2d = state.reshape(expected_obs_rows, features_per_host)
+        else:
+            state_2d = state
+
+        obs_obj = Observation.from_numpy(state_2d, state_shape)
+        host_obs, aux_obs = obs_obj.get_readable()
+
         total_hosts = len(host_obs)
         
-        # Categorize hosts by status and subnet
         sensitive_targets = []
         compromised_hosts = []
-        available_targets = []  # Reachable but not compromised
+        available_targets = []
         unexplored = []
         
-        # Track subnet status with detailed breakdown
         subnet_status = {}
-        subnet_hosts = {}  # Track which hosts are in each subnet
+        subnet_hosts = {}
         
         for idx, h in enumerate(host_obs):
             addr = self.env.network.address_space[idx]
             
-            # Skip undiscovered in partial obs mode
             if not self.fully_obs and not h['Discovered']:
                 unexplored.append(addr)
                 continue
             
-            # Get subnet
             subnet_id = addr[0] if isinstance(addr, tuple) else None
             if subnet_id not in subnet_status:
                 subnet_status[subnet_id] = {
@@ -306,16 +296,13 @@ class LLM4TeachTrainer:
                 }
             subnet_status[subnet_id]['total'] += 1
             
-            # Extract services
             services = [k for k, v in h.items() if k not in {
                 "Address", "Compromised", "Reachable", "Discovered",
                 "Sensitive", "Discovery Value", "Access"
             } and bool(v)]
             
-            # Build host description with explicit subnet
             host_desc = f"subnet {subnet_id}, host {addr[1]}" if isinstance(addr, tuple) else str(addr)
             
-            # Categorize host
             if h['Compromised']:
                 access_level = "ROOT" if h['Access'] >= 2 else "USER"
                 compromised_hosts.append(f"({host_desc}) - {access_level} access")
@@ -335,26 +322,21 @@ class LLM4TeachTrainer:
                 subnet_status[subnet_id]['reachable'] += 1
                 subnet_hosts[subnet_id]['reachable'].append((addr, services))
             else:
-                # Discovered but not reachable
                 subnet_hosts[subnet_id]['unreachable'].append((addr, services))
         
-        # Build strategic summary with enhanced subnet visibility
         lines = []
         
-        # 1. PROGRESS OVERVIEW
         num_compromised = len(compromised_hosts)
         num_sensitive_remaining = len(sensitive_targets)
         total_sensitive = sum(status['sensitive'] for status in subnet_status.values())
         lines.append(f"PROGRESS: {num_compromised}/{total_hosts} hosts compromised | {total_sensitive - num_sensitive_remaining}/{total_sensitive} sensitive targets secured")
         
-        # 2. NETWORK TOPOLOGY & SUBNET OVERVIEW
         lines.append("")
         lines.append("=== NETWORK TOPOLOGY ===")
         for subnet_id in sorted(subnet_status.keys()):
             status = subnet_status[subnet_id]
             hosts = subnet_hosts[subnet_id]
             
-            # Subnet header with status
             if status['compromised'] == status['total']:
                 subnet_line = f"SUBNET {subnet_id}: FULLY CONTROLLED ({status['total']} hosts)"
             elif status['compromised'] > 0:
@@ -362,37 +344,31 @@ class LLM4TeachTrainer:
             else:
                 subnet_line = f"SUBNET {subnet_id}: NOT COMPROMISED ({status['total']} hosts)"
             
-            # Add sensitive host indicator
             if status['sensitive'] > 0:
                 subnet_line += f" - Contains {status['sensitive']} SENSITIVE TARGET(S)"
             
             lines.append(subnet_line)
             
-            # List compromised hosts in this subnet
             if hosts['compromised']:
                 for addr, access, svcs in hosts['compromised']:
                     lines.append(f"  [C] {addr}: COMPROMISED ({access} access) - services: {svcs if svcs else 'none'}")
             
-            # List sensitive targets in this subnet
             if hosts['sensitive']:
                 for addr, reachable, svcs in hosts['sensitive']:
                     reach_status = "REACHABLE" if reachable else "NOT REACHABLE (need pivot)"
                     lines.append(f"  [S] {addr}: SENSITIVE TARGET - {reach_status} - services: {svcs if svcs else 'none'}")
             
-            # List other reachable hosts
             if hosts['reachable']:
                 for addr, svcs in hosts['reachable'][:2]: 
                     lines.append(f"  [R] {addr}: reachable - services: {svcs if svcs else 'none'}")
                 if len(hosts['reachable']) > 2:
                     lines.append(f"      + {len(hosts['reachable']) - 2} more reachable hosts")
             
-            # List unreachable hosts (if any)
             if hosts['unreachable']:
                 lines.append(f"  - {len(hosts['unreachable'])} host(s) not yet reachable (need pivot/scan)")
         
         lines.append("")
         
-        # 3. MISSION STATUS (clear objective)
         if num_sensitive_remaining > 0:
             lines.append(f"=== MISSION STATUS: {num_sensitive_remaining} SENSITIVE TARGET(S) REMAINING ===")
             for target in sensitive_targets[:3]:  
@@ -406,7 +382,6 @@ class LLM4TeachTrainer:
         
         lines.append("")
         
-        # 4. LAST ACTION RESULT
         if not aux_obs['Success']:
             if aux_obs['Connection Error']:
                 lines.append("LAST ACTION: Failed (connection error - target not reachable, need to pivot via compromised host)")
@@ -417,10 +392,8 @@ class LLM4TeachTrainer:
         else:
             lines.append("LAST ACTION: Success")
         
-        # 5. STRATEGIC GUIDANCE
         lines.append("")
         if num_sensitive_remaining > 0:
-            # Identify which subnets contain unreachable sensitive targets
             unreachable_subnets = []
             for subnet_id, hosts in subnet_hosts.items():
                 for addr, reachable, _ in hosts['sensitive']:
@@ -438,7 +411,105 @@ class LLM4TeachTrainer:
             lines.append("MISSION COMPLETE: All hosts compromised")
 
         return "\n".join(lines), host_obs, aux_obs
-    
+
+    _OS_ABBREV = {"linux": "lx", "windows": "win", "macos": "mac"}
+    _HOST_META = {"Address", "Compromised", "Reachable", "Discovered",
+                  "Sensitive", "Discovery Value", "Access"}
+
+    def compact_state_summary(self, host_obs: list, aux_obs: dict) -> str:
+        """Compact ~40-token state representation for the LLM teacher.
+
+        Format (generics across all NASim scenarios)::
+
+            0c/8h | 0/2s | FAIL-conn
+            S1(1h): (1,0)R[http,ssh]
+            S2*(1h): (2,0)S:!R[ssh,ftp,tomcat]
+            S3(5h): 5?
+            S4*(1h): (4,0)S:!R[ssh,ftp,tomcat]
+
+        Legend (also in system prompt):
+          Xc/Yh  = X of Y hosts compromised
+          X/Ys   = X of Y sensitive targets secured
+          OK / FAIL / FAIL-conn / FAIL-perm  = last action result
+          S1*(Nh) = subnet 1, N hosts, * = contains sensitive target
+          C:ROOT / C:USER  = compromised (access level)
+          R[svcs] = reachable host,  !R[svcs] = NOT reachable (need pivot)
+          S:R / S:!R = sensitive target, reachable / not reachable
+          N?   = N unreachable/undiscovered hosts
+        """
+        if host_obs is None or aux_obs is None:
+            return "OBS_ERR"
+
+        if not aux_obs.get('Success', True):
+            if aux_obs.get('Connection Error', False):
+                la = "FAIL-conn"
+            elif aux_obs.get('Permission Error', False):
+                la = "FAIL-perm"
+            else:
+                la = "FAIL"
+        else:
+            la = "OK"
+
+        subnet_data: dict = {}
+        num_compromised = 0
+        total_sensitive = 0
+        sensitive_remaining = 0
+        total_hosts = len(host_obs)
+
+        for idx, h in enumerate(host_obs):
+            addr = self.env.network.address_space[idx]
+            sid = addr[0] if isinstance(addr, tuple) else 0
+            hid = addr[1] if isinstance(addr, tuple) else idx
+
+            if not self.fully_obs and not h.get('Discovered', False):
+                if sid not in subnet_data:
+                    subnet_data[sid] = {'total': 0, 'sensitive': 0, 'entries': []}
+                subnet_data[sid]['total'] += 1
+                subnet_data[sid]['entries'].append('?')
+                continue
+
+            if sid not in subnet_data:
+                subnet_data[sid] = {'total': 0, 'sensitive': 0, 'entries': []}
+            subnet_data[sid]['total'] += 1
+
+            svcs = [
+                self._OS_ABBREV.get(k, k)
+                for k, v in h.items()
+                if k not in self._HOST_META and bool(v)
+            ]
+            svc_str = "[" + ",".join(svcs) + "]" if svcs else ""
+            tag = f"({sid},{hid})"
+
+            if h.get('Compromised', False):
+                num_compromised += 1
+                acc = "ROOT" if h.get('Access', 0) >= 2 else "USER"
+                subnet_data[sid]['entries'].append(f"{tag}C:{acc}{svc_str}")
+            elif h.get('Sensitive', False):
+                total_sensitive += 1
+                sensitive_remaining += 1
+                subnet_data[sid]['sensitive'] += 1
+                reach = "R" if h.get('Reachable', False) else "!R"
+                subnet_data[sid]['entries'].append(f"{tag}S:{reach}{svc_str}")
+            elif h.get('Reachable', False):
+                subnet_data[sid]['entries'].append(f"{tag}R{svc_str}")
+            else:
+                subnet_data[sid]['entries'].append(f"{tag}?")
+
+        sensitive_secured = total_sensitive - sensitive_remaining
+        lines = [f"{num_compromised}c/{total_hosts}h | {sensitive_secured}/{total_sensitive}s | {la}"]
+
+        for sid in sorted(subnet_data.keys()):
+            d = subnet_data[sid]
+            star = "*" if d['sensitive'] > 0 else ""
+            visible = [e for e in d['entries'] if not e.endswith('?') and e != '?']
+            n_unknown = sum(1 for e in d['entries'] if e.endswith('?') or e == '?')
+            parts = visible[:]
+            if n_unknown:
+                parts.append(f"{n_unknown}?")
+            lines.append(f"S{sid}{star}({d['total']}h): {' '.join(parts) if parts else '?'}")
+
+        return "\n".join(lines)
+
     def collect_rollout(self, max_steps: int = 1000, log_fh: Optional[TextIO] = None) -> Tuple[
         List[np.ndarray], List[int], List[int], np.ndarray,
         np.ndarray, np.ndarray
@@ -455,24 +526,45 @@ class LLM4TeachTrainer:
         done = False
         step = 0
         episode_reward = 0
-        
-        # Episode state tracking for enhanced reward shaping
-        visited_states = set()  # For exploration bonus
-        discovered_subnets = set()  # For subnet progression
-        compromised_subnets = set()  # For subnet control
-        action_history = []  # For chain bonuses: (step, option_id, target_host)
-        host_failure_counts = {}  # For repeated failure penalty
-        
+
+        if self.use_llm and self.llm_advisor is not None:
+            self.llm_advisor.reset_episode()
+
+        visited_states = set()
+        discovered_subnets = set()
+        compromised_subnets = set()
+        action_history = []
+        host_failure_counts = {}
+
+        prev_option_id: int = None
+        prev_action_desc: str = None
+
         while not done and step < max_steps:
-            # Query teacher first so its scores can guide action sampling (paper eq. 1)
             state_summary, host_obs_readable, aux_obs_readable = self.summarize_state(obs)
+            
+            should_call_llm = False
             if self.use_llm and self.llm_advisor is not None:
-                teacher_probs = self.llm_advisor.score_options(state_summary)
+                if self.llm_call_frequency == "every_step":
+                    should_call_llm = True
+                elif self.llm_call_frequency == "cached":
+                    should_call_llm = True
+                elif self.llm_call_frequency == "reduced":
+                    should_call_llm = (step % 5 == 0)
+            
+            if should_call_llm:
+                if self.use_compact_prompt:
+                    llm_input = self.compact_state_summary(host_obs_readable, aux_obs_readable)
+                else:
+                    llm_input = state_summary
+                
+                teacher_probs = self.llm_advisor.score_options(
+                    llm_input,
+                    last_option_id=prev_option_id,
+                    last_action_desc=prev_action_desc,
+                )
             else:
                 teacher_probs = np.ones(5, dtype=np.float32) / 5.0
 
-            # Sample option from mixed distribution: π_T = (1−w)·π_student + w·π_LLM
-            # mix_weight decays with λ so LLM influence fades as the student improves
             mix_weight = float(np.clip(self.current_lambda * self.llm_mix_weight, 0.0, 1.0))
             option_id = self.agent.choose_option(
                 obs, training=True,
@@ -480,150 +572,128 @@ class LLM4TeachTrainer:
                 mix_weight=mix_weight,
             )
             
-            # Select low-level action matching option
             candidates = list(range(len(self.action_list)))
             action_idx = self.agent.select_action_from_option(obs, option_id, candidates)
-            
-            # Step environment
+
+            prev_option_id = option_id
+            prev_action_desc = str(self.action_list[action_idx])
+
             next_obs, reward, done, truncated, info = self.env.step(action_idx)
 
-            # Treat truncation (time limit) as episode end for return/GAE.
             episode_end = bool(done or truncated)
             
             shaped_reward = reward
             
-            try:
-                action_obj = self.action_list[action_idx]
-                target_host = getattr(action_obj, 'target', None) or (action_obj.get('target') if isinstance(action_obj, dict) else None)
-            except:
-                target_host = None
+            action_obj = self.action_list[action_idx]
+            target_host = getattr(action_obj, 'target', None)
             
             if reward == -1:
                 connection_err = info.get('connection_error', False)
                 if connection_err:
-                    shaped_reward = -0.2  # Very small penalty for unreachable hosts
+                    shaped_reward = -0.2
                 else:
-                    shaped_reward = -0.3  # Small penalty for valid attempts
+                    shaped_reward = -0.3
                     
-                    # Extra penalty for repeated failures on same host
                     if target_host is not None:
                         host_failure_counts[target_host] = host_failure_counts.get(target_host, 0) + 1
                         if host_failure_counts[target_host] > 3:
-                            shaped_reward -= min(0.5, (host_failure_counts[target_host] - 3) * 0.1)  # Cap at -0.5 extra
+                            shaped_reward -= min(0.5, (host_failure_counts[target_host] - 3) * 0.1)
             
             elif reward >= 0:
                 try:
                     _, curr_hosts, _ = self.summarize_state(obs)
                     _, next_hosts, _ = self.summarize_state(next_obs)
-                    
+
+                    def get_subnet(host_addr):
+                        if isinstance(host_addr, tuple) and len(host_addr) >= 2:
+                            return host_addr[0]
+                        return None
+
                     if curr_hosts and next_hosts:
-                        def get_subnet(host_addr):
-                            try:
-                                if isinstance(host_addr, tuple) and len(host_addr) >= 2:
-                                    return host_addr[0]  # First element is subnet
-                                return None
-                            except:
-                                return None
-                        
                         newly_affected_host = None
                         sensitive_multiplier = 1.0
-                        
+
                         curr_discovered = sum(1 for h in curr_hosts if h.get('Discovered', False))
                         next_discovered = sum(1 for h in next_hosts if h.get('Discovered', False))
                         if next_discovered > curr_discovered:
                             num_new = next_discovered - curr_discovered
                             shaped_reward += 4 * num_new
                             shaped_reward += 2 * num_new
-                            
-                            # Find newly discovered host for subnet tracking
+
                             for i, (curr_h, next_h) in enumerate(zip(curr_hosts, next_hosts)):
                                 if not curr_h.get('Discovered', False) and next_h.get('Discovered', False):
                                     newly_affected_host = i
                                     break
-                        
+
                         curr_compromised = sum(1 for h in curr_hosts if h.get('Compromised', False))
                         next_compromised = sum(1 for h in next_hosts if h.get('Compromised', False))
                         if next_compromised > curr_compromised:
                             num_new_comp = next_compromised - curr_compromised
                             shaped_reward += 8 * num_new_comp
-                            
-                            # Find newly compromised host
+
                             for i, (curr_h, next_h) in enumerate(zip(curr_hosts, next_hosts)):
                                 if not curr_h.get('Compromised', False) and next_h.get('Compromised', False):
                                     newly_affected_host = i
-                                    # 6. SENSITIVE HOST MULTIPLIER (apply later)
                                     if next_h.get('Sensitive', False):
                                         sensitive_multiplier = 1.5
                                     break
-                        
+
                         curr_access = sum(h.get('Access', 0) for h in curr_hosts)
                         next_access = sum(h.get('Access', 0) for h in next_hosts)
                         if next_access > curr_access:
                             shaped_reward += 6 * (next_access - curr_access)
-                        
+
                         if newly_affected_host is not None:
                             host_addr = self.env.network.address_space[newly_affected_host]
                             subnet = get_subnet(host_addr)
-                            
+
                             if subnet is not None:
-                                # First discovery in new subnet
                                 if next_discovered > curr_discovered and subnet not in discovered_subnets:
                                     shaped_reward += 10
                                     discovered_subnets.add(subnet)
-                                
-                                # First compromise in new subnet
+
                                 if next_compromised > curr_compromised and subnet not in compromised_subnets:
                                     shaped_reward += 16
                                     compromised_subnets.add(subnet)
-                                
-                                # Complete subnet control (all hosts in subnet compromised)
-                                subnet_hosts = [i for i, addr in enumerate(self.env.network.address_space) 
+
+                                subnet_hosts = [i for i, addr in enumerate(self.env.network.address_space)
                                                if get_subnet(addr) == subnet]
                                 if subnet_hosts:
                                     all_comp = all(next_hosts[i].get('Compromised', False) for i in subnet_hosts)
                                     any_not_comp_before = any(not curr_hosts[i].get('Compromised', False) for i in subnet_hosts)
                                     if all_comp and any_not_comp_before:
                                         shaped_reward += 12
-                        
+
                         if len(action_history) > 0:
                             for past_step, past_option, past_target in action_history[-5:]:
-                                # SCAN (option 0) → EXPLOIT (option 1) on same host
-                                if (past_option == 0 and option_id == 1 and 
+                                if (past_option == 0 and option_id == 1 and
                                     past_target is not None and target_host == past_target and
                                     next_compromised > curr_compromised):
                                     shaped_reward += 6
-                                
-                                # EXPLOIT → PRIV_ESC chain (option 1 → 2)
+
                                 if (past_option == 1 and option_id == 2 and
                                     past_target is not None and target_host == past_target and
                                     next_access > curr_access):
                                     shaped_reward += 8
-                        
-                        # Compromise → Pivot to new subnet (MOVE option 4)
+
                         if option_id == 4 and newly_affected_host is not None:
                             new_subnet = get_subnet(self.env.network.address_space[newly_affected_host])
                             if new_subnet is not None and new_subnet not in discovered_subnets:
                                 shaped_reward += 14
-                        
-                        # 6. SENSITIVE HOST MULTIPLIER (apply to all bonuses)
+
                         if sensitive_multiplier > 1.0:
-                            # Apply multiplier to all bonuses added this step
                             shaped_reward = reward + (shaped_reward - reward) * sensitive_multiplier
-                        
+
                 except Exception as e:
-                    logger.debug(f"Reward shaping calculation failed: {e}")
-                    pass  # Fallback to base reward if parsing fails
+                    logger.debug(f"Reward shaping failed: {e}")
             
-            # 4. EXPLORATION INCENTIVE: Reward novel states
             state_hash = hash(obs.tobytes())
             if state_hash not in visited_states:
                 visited_states.add(state_hash)
                 shaped_reward += 1
             
-            # Track action for chain detection
             action_history.append((step, option_id, target_host))
             
-            # Store rollout (use shaped reward)
             states.append(obs.copy())
             option_ids.append(option_id)
             actions.append(action_idx)
@@ -659,20 +729,19 @@ class LLM4TeachTrainer:
             obs = next_obs
             step += 1
 
-            # End episode on either terminal or truncation
             if episode_end:
                 done = True
         
-        # Convert to arrays
         rewards_arr = np.array(rewards, dtype=np.float32)
         dones_arr = np.array(dones, dtype=np.float32)
         teacher_probs_arr = np.array(teacher_probs_list, dtype=np.float32)
         
         self.episode_rewards.append(episode_reward)
         self.episode_lengths.append(step)
-        
-        # Collect detailed metrics
-        self._collect_episode_metrics(states, option_ids, actions, rewards_arr, done)
+
+        # Use env.goal_reached() for a reliable success signal independent of shaped rewards
+        self._collect_episode_metrics(states, option_ids, actions, rewards_arr,
+                                       self.env.goal_reached())
         
         return states, option_ids, actions, rewards_arr, dones_arr, teacher_probs_arr
     
@@ -680,45 +749,42 @@ class LLM4TeachTrainer:
         try:
             if states:
                 _, final_hosts, final_aux = self.summarize_state(states[-1])
-                
+
                 if final_hosts:
                     num_hosts = len(final_hosts)
                     num_compromised = sum(1 for h in final_hosts if h.get('Compromised', False))
                     num_discovered = sum(1 for h in final_hosts if h.get('Discovered', False))
-                    num_sensitive_comp = sum(1 for h in final_hosts 
+                    num_sensitive_comp = sum(1 for h in final_hosts
                                             if h.get('Compromised', False) and h.get('Sensitive', False))
-                    
+
                     self.detailed_metrics['hosts_compromised'].append(num_compromised)
                     self.detailed_metrics['discovery_rate'].append(num_discovered / max(num_hosts, 1))
                     self.detailed_metrics['compromise_rate'].append(num_compromised / max(num_hosts, 1))
                     self.detailed_metrics['sensitive_compromised'].append(num_sensitive_comp)
-            
-            self.detailed_metrics['success_rate'].append(1 if success and rewards[-1] > 0 else 0)
-            
+
+            self.detailed_metrics['success_rate'].append(1 if success else 0)
+
             error_counts = {
                 'total_failures': int((rewards == -1).sum()) if len(rewards) > 0 else 0,
                 'total_successes': int((rewards > 0).sum()) if len(rewards) > 0 else 0,
             }
             self.detailed_metrics['error_counts'].append(error_counts)
-            
+
             if option_ids:
                 option_dist = {i: option_ids.count(i) for i in range(5)}
                 self.detailed_metrics['option_distribution'].append(option_dist)
-        
+
         except Exception as e:
             logger.debug(f"Metrics collection failed: {e}")
     
     def train_episode(self, episode_idx: int):
         if self.lambda_mode == "fixed":
-            # Exponential decay: λ = λ_start × λ_decay^t — no feedback, purely time-based
             lambda_kl = self.lambda_start * (self.lambda_decay ** episode_idx)
             self.current_lambda = lambda_kl
         else:
-            # Adaptive modes: use the value updated at end of last episode
             lambda_kl = self.current_lambda
         self.lambda_values.append(lambda_kl)
         
-        # Collect rollout
         log_fh = None
         if self.step_log_dir:
             log_fh = (self.step_log_dir / f"episode_{episode_idx + 1}.txt").open("w", encoding="utf-8")
@@ -736,14 +802,12 @@ class LLM4TeachTrainer:
             if log_fh is not None:
                 log_fh.close()
 
-        # Teacher agreement: fraction of steps where student chose LLM's top option
         if self.use_llm and teacher_probs is not None and len(teacher_probs) > 0:
             llm_top = np.argmax(teacher_probs, axis=1)
             teacher_agree = float(np.mean(np.array(option_ids) == llm_top))
         else:
             teacher_agree = float('nan')
         
-        # Update student with teacher signal
         t0_ppo = time.perf_counter()
         metrics = self.agent.update_from_rollout(
             states=states,
@@ -755,10 +819,10 @@ class LLM4TeachTrainer:
             lambda_kl=lambda_kl,
             num_epochs=self.num_epochs,
             batch_size=self.batch_size,
+            teacher_temp=self.teacher_temp,
         )
         t_ppo = time.perf_counter() - t0_ppo
 
-        # Timing: LLM inference time tracked in advisor; reset after reading
         if self.use_llm and self.llm_advisor is not None:
             t_llm = self.llm_advisor.elapsed_llm_s
             self.llm_advisor.reset_timing()
@@ -770,12 +834,11 @@ class LLM4TeachTrainer:
             ep_cache_hits = 0
             ep_cache_misses = 0
 
-        t_episode = t_rollout + t_ppo  # total wall time (excl. log I/O)
+        t_episode = t_rollout + t_ppo
 
         self.metrics_history.append(metrics)
 
         if self.lambda_mode == "target-kl":
-            # Feedback loop: scale λ up/down to keep actual KL near kl_target
             actual_kl = metrics.get('loss_kl', 0.0)
             if actual_kl > 0 and self.kl_target > 0:
                 ratio = actual_kl / self.kl_target
@@ -790,7 +853,6 @@ class LLM4TeachTrainer:
             kl_adjusted = self.current_lambda
 
         if self.lambda_mode in ("competence", "adaptive"):
-            # Lower λ as agent improves: competence = mean compromise rate over last N episodes
             cr_hist = self.detailed_metrics.get('compromise_rate', [])
             if cr_hist:
                 window = min(self.competence_window, len(cr_hist))
@@ -806,20 +868,23 @@ class LLM4TeachTrainer:
             comp_ceiling = self.current_lambda
 
         if self.lambda_mode == "target-kl":
-            self.current_lambda = kl_adjusted          # KL feedback only
+            self.current_lambda = kl_adjusted
         elif self.lambda_mode == "competence":
-            self.current_lambda = comp_ceiling         # competence ceiling only
+            self.current_lambda = comp_ceiling
         elif self.lambda_mode == "adaptive":
-            self.current_lambda = min(kl_adjusted, comp_ceiling)  # KL feedback within competence ceiling
-        # fixed: λ = lambda_start * lambda_decay^t, already set at top of method
+            self.current_lambda = min(kl_adjusted, comp_ceiling)
 
-        #  Write CSV row 
         if self._csv_writer is not None:
             avg_r = float(np.mean(self.episode_rewards[-10:])) if len(self.episode_rewards) >= 10 else float(np.mean(self.episode_rewards))
             cr_list = self.detailed_metrics.get('compromise_rate', [])
             dr_list = self.detailed_metrics.get('discovery_rate', [])
             sr_list = self.detailed_metrics.get('success_rate', [])
             hc_list = self.detailed_metrics.get('hosts_compromised', [])
+            
+            guidance_metrics = {}
+            if self.llm_advisor:
+                guidance_metrics = self.llm_advisor.get_guidance_metrics()
+            
             self._csv_writer.writerow({
                 'episode':           episode_idx + 1,
                 'reward':            round(self.episode_rewards[-1], 3),
@@ -843,16 +908,15 @@ class LLM4TeachTrainer:
                 't_episode_s':       round(t_episode, 2),
                 'cache_hits':        ep_cache_hits,
                 'cache_misses':      ep_cache_misses,
+                'avoidlist_used':    guidance_metrics.get('avoidlist_used', 0),
             })
             self._csv_file.flush()
 
-        # Log
         if self.verbose:
             if (episode_idx + 1) % 10 == 0 or episode_idx < 5:
                 avg_reward = np.mean(self.episode_rewards[-10:]) if len(self.episode_rewards) >= 10 else np.mean(self.episode_rewards)
                 avg_length = np.mean(self.episode_lengths[-10:]) if len(self.episode_lengths) >= 10 else np.mean(self.episode_lengths)
                 
-                # Get current episode metrics
                 recent = min(10, len(self.detailed_metrics['success_rate']))
                 if recent > 0:
                     success_rate = np.mean(self.detailed_metrics['success_rate'][-recent:])
@@ -882,7 +946,6 @@ class LLM4TeachTrainer:
                         f"Loss (actor/kl): {metrics['loss_actor']:.4f} / {metrics['loss_kl_norm']:.4f}"
                     )
         
-        # Save checkpoint
         if self.save_dir and (episode_idx + 1) % 20 == 0:
             ckpt_path = self.save_dir / f"ckpt_episode_{episode_idx + 1}.pt"
             self.agent.save_checkpoint(str(ckpt_path))
@@ -905,13 +968,13 @@ class LLM4TeachTrainer:
         logger.info(f"Device: {self.device}")
         logger.info("=" * 60)
 
-        # Open CSV log
         _CSV_FIELDS = [
             'episode', 'reward', 'avg_reward_10', 'length',
             'lambda_kl', 'next_lambda',
             'hosts_compromised', 'hosts_total', 'compromise_rate', 'discovery_pct',
             'loss_actor', 'loss_critic', 'loss_kl_norm', 'clip_pct', 'teacher_agree', 'success',
             't_rollout_s', 't_ppo_s', 't_llm_s', 't_episode_s', 'cache_hits', 'cache_misses',
+            'avoidlist_used',
         ]
         if self.csv_log_path:
             self.csv_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -920,7 +983,6 @@ class LLM4TeachTrainer:
             self._csv_writer.writeheader()
             logger.info(f"CSV log: {self.csv_log_path}")
 
-        # Write config JSON
         if self.save_dir:
             config_path = self.save_dir.parent / "config.json"
             config = {
@@ -937,7 +999,13 @@ class LLM4TeachTrainer:
                 "kl_target": self.kl_target,
                 "lambda_min": self.lambda_min,
                 "competence_window": self.competence_window,
+                "teacher_temp": self.teacher_temp,
                 "hidden_dim": self.agent.student.hidden_dim,
+                "condition": self.condition,
+                "use_history_mechanism": self.use_history_mechanism,
+                "use_avoidlist": self.use_avoidlist,
+                "use_compact_prompt": self.use_compact_prompt,
+                "llm_call_frequency": self.llm_call_frequency,
                 "learning_rate": self.agent.optimizer.param_groups[0]['lr'],
                 "batch_size": self.batch_size,
                 "num_epochs": self.num_epochs,
@@ -955,7 +1023,6 @@ class LLM4TeachTrainer:
                 self._csv_file = None
                 self._csv_writer = None
         
-        # Final stats
         logger.info("=" * 60)
         logger.info("Training Complete!")
         logger.info(f"Final episode reward: {self.episode_rewards[-1]:.2f}")
@@ -966,7 +1033,6 @@ class LLM4TeachTrainer:
             cache_stats = self.llm_advisor.get_cache_stats()
             logger.info(f"LLM cache stats: {cache_stats}")
         
-        # Average statistics
         if self.detailed_metrics['sensitive_compromised']:
             avg_sensitive_comp = np.mean(self.detailed_metrics['sensitive_compromised'])
             logger.info(f"Average hosts compromised: {avg_sensitive_comp:.2f}/{self.total_sensitive_hosts}")
@@ -974,7 +1040,6 @@ class LLM4TeachTrainer:
             avg_discovery = np.mean(self.detailed_metrics['discovery_rate'])
             logger.info(f"Average discovery rate: {avg_discovery:.1%}")
         
-        # Save final checkpoint
         if self.save_dir:
             final_ckpt = self.save_dir / "ckpt_final.pt"
             self.agent.save_checkpoint(str(final_ckpt))
@@ -990,7 +1055,6 @@ class LLM4TeachTrainer:
             step = 0
             
             while not done and step < self.episode_length:
-                # Choose action (no teacher during eval)
                 option_id = self.agent.choose_option(obs, training=False)
                 candidates = list(range(len(self.action_list)))
                 action_idx = self.agent.select_action_from_option(obs, option_id, candidates)
@@ -1041,11 +1105,11 @@ def main():
                         help="Run evaluation instead of training")
     parser.add_argument("--eval-episodes", type=int, default=5,
                         help="Number of eval episodes (default: 5)")
-    parser.add_argument("--llama-model", type=str, default="llm_weights/llama-3.2-1B-Instruct",
-                        help="Local Llama model path (default: llm_weights/llama-3.2-1B-Instruct)")
+    parser.add_argument("--llama-model", type=str, default="llm_weights/Qwen3-4B",
+                        help="Local Llama model path (default: llm_weights/Qwen3-4B)")
     parser.add_argument("--no-llama-4bit", action="store_false", dest="llama_4bit",
                         help="Disable 4-bit quantization (default: enabled on GPU)")
-    parser.set_defaults(llama_4bit=False)
+    parser.set_defaults(llama_4bit=True)
     parser.add_argument("--no-step-logs", action="store_true",
                         help="Disable per-step logs (saves disk space)")
     parser.add_argument("--fully-obs", action="store_true", default=True,
@@ -1065,6 +1129,21 @@ def main():
                         help="Rolling window for competence-based lambda (default: 10)")
     parser.add_argument("--llm-mix-weight", type=float, default=0.3,
                         help="Max fraction of LLM in option sampling (0=pure student, 1=pure LLM). Decays with lambda. Default: 0.3")
+    parser.add_argument("--teacher-temp", type=float, default=2.0,
+                        help="Temperature for softening teacher distribution in KL loss (1.0=no softening, 2.0=default)")
+    
+    parser.add_argument("--condition", type=str, default="",
+                        help="Condition label written to config.json (auto-detected from --no-llm if blank)")
+    parser.add_argument("--no-history", action="store_false", dest="use_history",
+                        help="Disable history mechanism (old behavior: no action log)")
+    parser.add_argument("--no-avoidlist", action="store_false", dest="use_avoidlist",
+                        help="Disable avoidlist (don't track failed action pairs)")
+    parser.add_argument("--verbose-prompt", action="store_false", dest="use_compact_prompt",
+                        help="Use verbose prompts instead of compact nomad-style")
+    parser.add_argument("--llm-call-freq", type=str, default="every_step",
+                        choices=["every_step", "cached", "reduced"],
+                        help="LLM call frequency (default: every_step)")
+    parser.set_defaults(use_history=True, use_avoidlist=True, use_compact_prompt=True)
 
     args = parser.parse_args()
 
@@ -1101,10 +1180,15 @@ def main():
         lambda_min=args.lambda_min,
         competence_window=args.competence_window,
         llm_mix_weight=args.llm_mix_weight,
+        teacher_temp=args.teacher_temp,
         csv_log=None,
+        use_history_mechanism=args.use_history,
+        use_avoidlist=args.use_avoidlist,
+        use_compact_prompt=args.use_compact_prompt,
+        llm_call_frequency=args.llm_call_freq,
+        condition=args.condition,
     )
     
-    # Train or eval
     if args.eval:
         logger.info(f"Running evaluation ({args.eval_episodes} episodes)...")
         trainer.evaluate(num_episodes=args.eval_episodes)

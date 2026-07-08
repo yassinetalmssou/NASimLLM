@@ -6,11 +6,11 @@ from typing import Tuple, Dict, List, Optional
 
 
 OPTION_ID_MAP = {
-    0: "SCAN",          # ServiceScan, OSScan, SubnetScan, ProcessScan
-    1: "EXPLOIT",       # Exploit actions
-    2: "PRIV_ESC",      # PrivilegeEscalation actions
-    3: "PIVOT",         # No-op (e.g., lateral movement placeholder)
-    4: "MOVE",          # No-op or explicit lateral movement
+    0: "SCAN",
+    1: "EXPLOIT",
+    2: "PRIV_ESC",
+    3: "PIVOT",
+    4: "MOVE",
 }
 
 OPTION_TO_ID = {v: k for k, v in OPTION_ID_MAP.items()}
@@ -18,25 +18,14 @@ OPTION_TO_ID = {v: k for k, v in OPTION_ID_MAP.items()}
 
 def action_to_option_id(action_obj, action_list: List) -> int:
     if action_obj.is_scan():
-        return OPTION_TO_ID["SCAN"]  # 0
+        return OPTION_TO_ID["SCAN"]
     elif action_obj.is_exploit():
-        return OPTION_TO_ID["EXPLOIT"]  # 1
+        return OPTION_TO_ID["EXPLOIT"]
     elif action_obj.is_privilege_escalation():
-        return OPTION_TO_ID["PRIV_ESC"]  # 2
+        return OPTION_TO_ID["PRIV_ESC"]
     elif action_obj.is_noop():
-        # Could be PIVOT or MOVE; for now, use PIVOT as default
-        return OPTION_TO_ID["PIVOT"]  # 3
+        return OPTION_TO_ID["PIVOT"]
     else:
-        # Fallback to MOVE
-        return OPTION_TO_ID["MOVE"]  # 4
-
-
-def action_id_to_option_id(action_id: int, action_list: List) -> int:
-    if action_id < len(action_list):
-        action_obj = action_list[action_id]
-        return action_to_option_id(action_obj, action_list)
-    else:
-        # Out of range; default to MOVE
         return OPTION_TO_ID["MOVE"]
 
 
@@ -121,8 +110,6 @@ class LLM4TeachAgent:
             student_probs = F.softmax(logits, dim=-1).cpu().numpy().squeeze()
 
         if teacher_probs is not None and mix_weight > 0.0:
-            # π_T = (1 − w)·π_student + w·π_LLM  (paper eq. 1, adapted for option level)
-            # mix_weight decays with λ: strong LLM guidance early, pure student late
             mixed = (1.0 - mix_weight) * student_probs + mix_weight * teacher_probs
             mixed = np.clip(mixed, 1e-8, 1.0)
             mixed /= mixed.sum()
@@ -138,12 +125,8 @@ class LLM4TeachAgent:
     
     def _parse_state_for_filtering(self, state: np.ndarray) -> Dict:
         try:
-            # Estimate number of hosts from state dimension
-            # Typical: (num_hosts + 1) * features_per_host = state_dim
-            # For tiny: 4 rows * 16 features = 64
             num_hosts = len(self.action_list[0].target) if hasattr(self.action_list[0].target, '__len__') else 3
             
-            # Simple heuristic: check non-zero values in host sections
             host_info = {}
             features_per_host = len(state) // (num_hosts + 1)
             
@@ -152,16 +135,15 @@ class LLM4TeachAgent:
                 end = start + features_per_host
                 host_vec = state[start:end]
                 
-                # Heuristic: reachable if any features non-zero, compromised if sum > threshold
                 host_info[h_idx] = {
                     'reachable': host_vec.sum() > 0.1,
-                    'compromised': host_vec.sum() > 2.0,  # Higher threshold for compromise
-                    'access': int(host_vec[6]) if len(host_vec) > 6 else 0  # Access level typically at index 6
+                    'compromised': host_vec.sum() > 2.0,
+                    'access': int(host_vec[6]) if len(host_vec) > 6 else 0
                 }
             
             return host_info
         except Exception:
-            # Fallback: assume all hosts reachable and not compromised
+
             return {i: {'reachable': True, 'compromised': False, 'access': 0} for i in range(3)}
     
     def _filter_valid_actions(self, candidates: List[int], state: np.ndarray) -> List[int]:
@@ -174,16 +156,14 @@ class LLM4TeachAgent:
             
             action = self.action_list[a_idx]
             
-            # Extract target host (handle tuple addresses)
             if hasattr(action, 'target') and action.target is not None:
                 if isinstance(action.target, tuple) and len(action.target) >= 2:
-                    target_host = action.target[1]  # (subnet, host) -> take host index
+                    target_host = action.target[1]
                 else:
                     target_host = 0
             else:
                 target_host = 0
             
-            # Skip if target host out of range
             if target_host not in host_info:
                 continue
             
@@ -199,7 +179,7 @@ class LLM4TeachAgent:
             
             valid.append(a_idx)
         
-        return valid if valid else candidates  # Fallback to all if none valid
+        return valid if valid else candidates
     
     def select_action_from_option(self, state: np.ndarray,
                                   option_id: int,
@@ -210,9 +190,7 @@ class LLM4TeachAgent:
         
         valid_candidates = self._filter_valid_actions(candidates, state)
 
-        # PIVOT/MOVE have no direct NASim primitive: map to EXPLOIT or SCAN
         if option_id in (OPTION_TO_ID["PIVOT"], OPTION_TO_ID["MOVE"]):
-            # Prefer EXPLOIT if any exploit action is available; otherwise default to SCAN.
             has_exploit = any(
                 (idx < len(self.action_list) and self.action_list[idx].is_exploit())
                 for idx in valid_candidates
@@ -226,7 +204,6 @@ class LLM4TeachAgent:
                 if action_to_option_id(action, self.action_list) == option_id:
                     matching_actions.append(idx)
         
-        # Fallback if no matches
         if not matching_actions:
             return valid_candidates[0] if valid_candidates else (candidates[0] if candidates else 0)
         
@@ -267,17 +244,16 @@ class LLM4TeachAgent:
                             teacher_option_probs: Optional[np.ndarray] = None,
                             lambda_kl: float = 0.1,
                             num_epochs: int = 3,
-                            batch_size: int = 32) -> Dict[str, float]:
+                            batch_size: int = 32,
+                            teacher_temp: float = 2.0) -> Dict[str, float]:
         with torch.no_grad():
             values_list = []
             for state in states:
                 state_t = torch.from_numpy(state).float().to(self.device)
                 _, value = self.student.forward(state_t)
-                # Flatten value to scalar
                 values_list.append(value.squeeze().cpu().numpy())
             values = np.array(values_list, dtype=np.float32)
 
-            # Bootstrap value when rollout ended due to time limit (non-terminal)
             if len(dones) > 0 and float(dones[-1]) < 0.5:
                 last_state_t = torch.from_numpy(states[-1]).float().to(self.device)
                 _, last_v = self.student.forward(last_state_t)
@@ -338,32 +314,26 @@ class LLM4TeachAgent:
                 
                 critic_loss = F.mse_loss(values_batch, batch_returns)
                 
-                # KL(soft_teacher || student) with T=2.0 to soften peaked LLM distributions
                 loss_kl = torch.tensor(0.0, device=self.device)
                 loss_kl_norm = torch.tensor(0.0, device=self.device)
                 if teacher_option_probs is not None:
                     batch_teacher_probs = teacher_probs_t[batch_indices]
-                    T = 2.0
+                    T = max(teacher_temp, 1e-3)
                     soft_teacher = batch_teacher_probs.pow(1.0 / T)
                     soft_teacher = soft_teacher / (soft_teacher.sum(dim=-1, keepdim=True) + 1e-8)
                     loss_kl = (soft_teacher * (
                         torch.log(soft_teacher + 1e-8) -
                         torch.log(probs + 1e-8)
                     )).sum(dim=-1).mean()
-                    # Normalize KL to [0,1] by dividing by log(K): now comparable to actor loss scale
                     loss_kl_norm = loss_kl / np.log(self.student.num_options)
 
-                # actor and KL are now on compatible scales (both O(0.01–1.0))
-                # critic tracked separately so it does not distort actor/KL ratio in logs
                 loss_total = actor_loss + 0.5 * critic_loss - 0.01 * entropy.mean() + lambda_kl * loss_kl_norm
                 
-                # Backward & optimize with gradient clipping
                 self.optimizer.zero_grad()
                 loss_total.backward()
                 torch.nn.utils.clip_grad_norm_(self.student.parameters(), max_norm=0.5)
                 self.optimizer.step()
                 
-                # Metrics — actor and KL reported separately for proper scaling analysis
                 metrics["loss_actor"].append(actor_loss.item())
                 metrics["loss_critic"].append(critic_loss.item())
                 metrics["loss_kl"].append(loss_kl.item())
@@ -371,7 +341,6 @@ class LLM4TeachAgent:
                 metrics["loss_total"].append(loss_total.item())
                 metrics["clip_fraction"].append(clip_fraction)
         
-        # Average metrics
         return {
             "loss_actor":    np.mean(metrics["loss_actor"])    if metrics["loss_actor"]    else 0.0,
             "loss_critic":   np.mean(metrics["loss_critic"])   if metrics["loss_critic"]   else 0.0,

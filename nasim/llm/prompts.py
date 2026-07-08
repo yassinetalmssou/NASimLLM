@@ -1,85 +1,62 @@
-# ============================================================================
-# STRUCTURED PROMPT TEMPLATES (Du et al. Appendix D Style)
-# ============================================================================
-# These prompts include:
-# - Explicit rules 
-# - Valid action definitions
-# - In-context examples 
-# - Constraint definitions 
-# - Domain knowledge
-# Reference: https://proceedings.mlr.press/v202/du23f/du23f.pdf
+SCORE_OPTIONS_SYSTEM = """You are a cybersecurity expert guiding a reinforcement learning agent in NASim (Network Attack Simulator).
 
-SCORE_OPTIONS_STRUCTURED = """You are a cybersecurity expert analyzing a network penetration test in NASim (Network Attack Simulator).
+ENVIRONMENT:
+- Network with multiple subnets. Subnet 0 = Internet (attacker). Subnets 1+ = target hosts.
+- Host format: (subnet_id, host_id). Goal: root access to ALL sensitive targets.
+- Subnets separated by firewalls. Need a compromised host to pivot into a new subnet.
 
-=== NASIM ENVIRONMENT ===
-NASim simulates a realistic network with multiple subnets, hosts, and security controls.
-- Network: Contains multiple subnets (e.g., DMZ, User, Sensitive) with hosts running services (SSH, HTTP, FTP) and processes
-- Host Addresses: Each host has address (subnet_id, host_id). Example: (1, 0) = host 0 in subnet 1, (5, 2) = host 2 in subnet 5
-  - Subnet 0 is the Internet (attacker's location)
-  - Subnets 1+ contain target hosts (DMZ, User networks, Sensitive networks)
-  - Hosts within a subnet are numbered from 0 (e.g., subnet with 3 hosts has hosts 0, 1, 2)
-- Goal: Gain root access to ALL SENSITIVE hosts (marked as [S] SENSITIVE TARGET)
-- Episode Success: When all sensitive hosts are compromised with root access
-- Rewards: Episode completion = +1000. Failed actions = -1. Intermediate progress gives small positive rewards.
-- Topology: Subnets are connected via firewalls that block certain communications. You may need to compromise hosts in one subnet to pivot into another.
-- Your mission: Guide the agent to efficiently compromise all SENSITIVE targets and achieve mission completion
+STATE FORMAT (compact notation):
+  Xc/Yh | X/Ys | <last>   → X of Y hosts compromised, X of Y sensitive secured, last action result
+  Sn*(Kh): ...             → subnet n, K hosts, * = contains sensitive target
+  (s,h)R[svcs]             → host reachable, services listed
+  (s,h)!R[svcs]            → NOT reachable (need pivot first)
+  (s,h)S:R / (s,h)S:!R    → sensitive target, reachable / not reachable
+  (s,h)C:ROOT / C:USER     → host compromised at that access level
+  N?                       → N hosts not yet reachable/discovered
+  last action: OK / FAIL / FAIL-conn (unreachable) / FAIL-perm (need priv_esc)
+  OS abbreviations: lx=linux, win=windows
 
-=== VALID OPTIONS ===
-You have exactly 5 strategic options available:
-1. SCAN: Perform reconnaissance (ServiceScan, OSScan, ProcessScan, SubnetScan) to discover hosts, services, and vulnerabilities
-2. EXPLOIT: Exploit known vulnerabilities in remote services to gain initial access (typically user-level)
-3. PRIV_ESC: Escalate privileges on a compromised host (user → root) to gain full control
-4. PIVOT: Establish lateral movement to access new subnets and expand the attack surface (critical when targets are "NOT REACHABLE")
-5. MOVE: Move between already compromised hosts to reposition for further attacks
+OPTIONS (score 0-100, integers only):
+1. SCAN - Reconnaissance: discover hosts, services, vulnerabilities
+2. EXPLOIT - Attack remote service → user-level access
+3. PRIV_ESC - Escalate user→root on already-compromised host
+4. PIVOT - Lateral move into new subnet (requires ≥1 compromised host)
+5. MOVE - Reposition between already-compromised hosts
 
-=== SCORING INSTRUCTIONS (10 Rules) ===
-1. Base recommendations on OBSERVABLE state only (visible hosts, services, privileges).
-2. Each state is independent. Make recommendations only for the CURRENT state.
-3. Score each option 0-100. Only use valid integers. Higher = stronger recommendation.
-4. Do NOT recommend options that are impossible (e.g., PRIV_ESC if already root, EXPLOIT if no targets visible).
-5. PRIORITIZE actions that progress toward mission completion (compromising SENSITIVE hosts marked [S]).
-6. CRITICAL: PIVOT requires at least ONE compromised host! If NO hosts are compromised yet, EXPLOIT must be prioritized over PIVOT.
-7. PAY ATTENTION TO SUBNETS: If sensitive targets are in subnet X but "NOT REACHABLE", you need to compromise a host first, THEN pivot.
-8. Use cybersecurity domain knowledge: reconnaissance > exploitation > privilege escalation > lateral movement > repeat.
-9. If a subnet contains SENSITIVE targets but is "NOT COMPROMISED", first EXPLOIT reachable hosts to establish foothold, then PIVOT.
-10. Remember: Only SENSITIVE hosts ([S]) matter for mission completion. But you need stepping stones (regular hosts) to reach them.
+RULES:
+- Never score impossible actions (PIVOT=0 if no hosts compromised; PRIV_ESC=0 if already root).
+- Prioritize actions toward sensitive targets (S:).
+- Attack chain: SCAN→EXPLOIT→PRIV_ESC→PIVOT→repeat.
+- S:!R means the sensitive target needs a pivot first via a compromised host.
+- FAIL-conn = target unreachable, try PIVOT or SCAN. FAIL-perm = try PRIV_ESC.
 
-=== IN-CONTEXT EXAMPLES ===
+EXAMPLES:
+State: "0c/3h | 0/1s | OK\nS1(1h): (1,0)R[ssh,http]\nS2*(1h): (2,0)S:!R[ssh,ftp]"
+{"SCAN":50,"EXPLOIT":95,"PRIV_ESC":0,"PIVOT":20,"MOVE":0}
 
-Example 1 - Initial reconnaissance (NO compromised hosts yet):
-State: "SUBNET 1: NOT COMPROMISED - [R] (1,0): reachable - services: ['ssh','http']. SUBNET 2: Contains SENSITIVE TARGET - NOT REACHABLE"
-Recommended scores: SCAN=50, EXPLOIT=95, PRIV_ESC=0, PIVOT=20, MOVE=0
-Reason: EXPLOIT FIRST! Must compromise (1,0) before pivoting to subnet 2. PIVOT is impossible without compromised host.
+State: "1c/3h | 0/1s | OK\nS1(1h): (1,0)C:USER[ssh]\nS2*(1h): (2,0)S:R[ssh,ftp]"
+{"SCAN":40,"EXPLOIT":95,"PRIV_ESC":30,"PIVOT":20,"MOVE":20}
 
-Example 2 - Sensitive target reachable:
-State: "SUBNET 2: PARTIALLY CONTROLLED. [S] (2,1): SENSITIVE TARGET - REACHABLE - services: ['ssh','http']"
-Recommended scores: SCAN=40, EXPLOIT=95, PRIV_ESC=30, PIVOT=20, MOVE=20
-Reason: EXPLOIT sensitive target immediately! This progresses mission. PRIV_ESC if already have user access.
+State: "3c/3h | 0/2s | OK\nS1(3h): (1,0)C:ROOT (1,1)C:ROOT (1,2)C:ROOT\nS2*(2h): (2,0)S:!R 1?"
+{"SCAN":70,"EXPLOIT":30,"PRIV_ESC":20,"PIVOT":95,"MOVE":40}
 
-Example 3 - Need to pivot:
-State: "SUBNET 1: FULLY CONTROLLED. SUBNET 2: NOT COMPROMISED - Contains 2 SENSITIVE TARGETS - NOT REACHABLE"
-Recommended scores: SCAN=70, EXPLOIT=30, PRIV_ESC=20, PIVOT=95, MOVE=40
-Reason: PIVOT critical! Sensitive targets in subnet 2 require lateral movement. SCAN to find pivot paths.
+State: "2c/8h | 0/1s | OK\nS2*(1h): (2,0)C:USER[ssh,ftp]"
+{"SCAN":20,"EXPLOIT":30,"PRIV_ESC":95,"PIVOT":30,"MOVE":20}
 
-Example 4 - Privilege escalation needed:
-State: "[S] (2,0): SENSITIVE TARGET - COMPROMISED (USER access)"
-Recommended scores: SCAN=20, EXPLOIT=30, PRIV_ESC=95, PIVOT=30, MOVE=20
-Reason: PRIV_ESC urgent! Already compromised sensitive target, need ROOT to secure it.
+Reply ONLY with compact JSON: {"SCAN":<n>,"EXPLOIT":<n>,"PRIV_ESC":<n>,"PIVOT":<n>,"MOVE":<n>}"""
 
-=== CURRENT STATE ===
+
+SCORE_OPTIONS_USER = """{history}STATE:
 {state_summary}
 
-Based on the above rules and examples, score each option (0-100):
-- Which subnets contain SENSITIVE targets [S]?
-- Are those targets REACHABLE or do you need to PIVOT?
-- Which actions directly progress toward compromising SENSITIVE hosts?
-- What would a cybersecurity expert prioritize?
+JSON scores:"""
 
-Respond ONLY with valid JSON (no markdown, no explanation, no extra text):
-{{"SCAN": <score>, "EXPLOIT": <score>, "PRIV_ESC": <score>, "PIVOT": <score>, "MOVE": <score>}}
-"""
+
+SCORE_OPTIONS_STRUCTURED = SCORE_OPTIONS_SYSTEM + "\n\n=== CURRENT STATE ===\n{state_summary}\n\nJSON scores:"
 
 
 __all__ = [
+    "SCORE_OPTIONS_SYSTEM",
+    "SCORE_OPTIONS_USER",
     "SCORE_OPTIONS_STRUCTURED",
 ]

@@ -1,12 +1,13 @@
 """This module contains functions and classes for rendering NASim """
 import math
 import random
-import tkinter as Tk
 import networkx as nx
 from prettytable import PrettyTable
 
-# import order important here
+# tkinter and matplotlib are only needed for GUI rendering.
+# On headless systems (HPC) these imports are skipped gracefully.
 try:
+    import tkinter as Tk
     import matplotlib
     matplotlib.use('TkAgg')
     import matplotlib.pyplot as plt         # noqa E402
@@ -15,10 +16,10 @@ try:
 except Exception as ex:
     import warnings
     warnings.warn(
-        f"Unable to import Matplotlib with TkAgg backend due to following "
-        f"exception: \"{type(ex)} {ex}\". NASIM can still run but GUI "
-        f"functionallity may not work as expected."
+        f"Unable to import Tkinter/Matplotlib due to: \"{type(ex)} {ex}\". "
+        f"NASIM can still run but GUI functionality will not work."
     )
+    Tk = None
 
 # Agent node in graph
 AGENT = (0, 0)

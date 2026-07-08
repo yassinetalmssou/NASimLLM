@@ -64,8 +64,8 @@ if [ ! -d "$LLM_MODEL" ]; then
 fi
 
 mkdir -p logs \
-    "$OUT_ROOT/tiny/rq1" \
-    "$OUT_ROOT/tiny/rq3b" \
+    "$OUT_ROOT/rq1" \
+    "$OUT_ROOT/rq3" \
     "$OUT_ROOT/rq2"
 
 # ── RQ1: LLM guidance vs baselines ───────────────────────────────────────────
@@ -76,7 +76,7 @@ python -m nasim.scripts.run_rq1 \
     --scenario   "$SCENARIO" \
     --episodes   "$EPISODES" \
     --seeds      "$SEED" \
-    --out-dir    "$OUT_ROOT/$SCENARIO/rq1" \
+    --out-dir    "$OUT_ROOT/rq1" \
     --device     "$DEVICE" \
     --llama-model "$LLM_MODEL"
 echo "✓ RQ1 done"
@@ -103,7 +103,7 @@ python -m nasim.scripts.run_rq3b \
     --scenario   "$SCENARIO" \
     --episodes   "$EPISODES" \
     --seeds      "$SEED" \
-    --out-dir    "$OUT_ROOT/$SCENARIO/rq3b" \
+    --out-dir    "$OUT_ROOT/rq3" \
     --device     "$DEVICE" \
     --llama-model "$LLM_MODEL"
 echo "✓ RQ3b done"

@@ -23,5 +23,7 @@ tqdm
 # ----- Training & logging -----
 tensorboard>=2.2
 
-# ----- Analysis (notebook) -----
+# ----- Analysis (notebooks: rq1/rq2/rq3) -----
 pandas
+scipy
+jupyter

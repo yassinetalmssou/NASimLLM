@@ -21,7 +21,7 @@ source $VSC_DATA/.venvs/nasim/bin/activate
 
 if [ -z "$1" ]; then
     echo "ERROR: Missing command file argument"
-    echo "Usage: sbatch --array=1-N submit_rq2.sh <command_file>"
+    echo "Usage: sbatch --array=1-N hpc/jobs/rq2.sh <command_file>"
     exit 1
 fi
 

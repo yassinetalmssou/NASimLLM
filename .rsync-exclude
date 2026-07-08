@@ -1,0 +1,44 @@
+# Exclude list for rsync upload to HPC
+# Usage: rsync --exclude-from=.rsync-exclude ...
+
+# LLM weights (placed separately in $VSC_DATA/llm_weights on HPC)
+llm_weights/
+
+# Python caches and build artefacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment (rebuilt on HPC via hpc_setup.sh)
+.venv/
+.env/
+
+# Local experiment results (download FROM HPC, not upload)
+runs/
+models/
+
+# Tensorboard logs
+nasim/agents/runs/
+
+# Jupyter / editor
+.ipynb_checkpoints/
+*.ipynb
+.vscode/
+.idea/
+
+# Large binary model artefacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Sphinx build
+docs/_build/
