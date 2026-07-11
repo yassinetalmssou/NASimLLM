@@ -63,6 +63,7 @@ class LLM4TeachTrainer:
                  device: str = "cpu",
                  save_dir: Optional[str] = None,
                  step_log_dir: Optional[str] = "./llm4teach_step_logs",
+                 ckpt_every: int = 0,
                  use_llm: bool = True,
                  force_llm: bool = False,
                  prompt_variant: str = "structured",
@@ -97,6 +98,8 @@ class LLM4TeachTrainer:
         self.device = device
         self.save_dir = Path(save_dir) if save_dir else None
         self.step_log_dir = Path(step_log_dir) if step_log_dir else None
+        # 0 = only the final checkpoint (disk-frugal); >0 = also every N episodes.
+        self.ckpt_every = int(ckpt_every)
         self.use_llm = use_llm
         self.prompt_variant = prompt_variant
         self.verbose = verbose
@@ -946,7 +949,7 @@ class LLM4TeachTrainer:
                         f"Loss (actor/kl): {metrics['loss_actor']:.4f} / {metrics['loss_kl_norm']:.4f}"
                     )
         
-        if self.save_dir and (episode_idx + 1) % 20 == 0:
+        if self.save_dir and self.ckpt_every > 0 and (episode_idx + 1) % self.ckpt_every == 0:
             ckpt_path = self.save_dir / f"ckpt_episode_{episode_idx + 1}.pt"
             self.agent.save_checkpoint(str(ckpt_path))
             logger.info(f"Saved checkpoint: {ckpt_path}")
@@ -1143,6 +1146,9 @@ def main():
     parser.add_argument("--llm-call-freq", type=str, default="every_step",
                         choices=["every_step", "cached", "reduced"],
                         help="LLM call frequency (default: every_step)")
+    parser.add_argument("--ckpt-every", type=int, default=0,
+                        help="Save an intermediate checkpoint every N episodes "
+                             "(0 = only the final checkpoint; keeps disk usage low)")
     parser.set_defaults(use_history=True, use_avoidlist=True, use_compact_prompt=True)
 
     args = parser.parse_args()
@@ -1166,6 +1172,7 @@ def main():
         device=args.device,
         save_dir=args.save_dir,
         step_log_dir=step_log_dir,
+        ckpt_every=args.ckpt_every,
         use_llm=use_llm,
         force_llm=False,
         prompt_variant="structured",

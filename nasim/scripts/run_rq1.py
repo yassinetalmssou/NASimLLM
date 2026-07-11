@@ -199,7 +199,7 @@ def run_trainer_condition(condition: str, scenario: str, seed: int,
         episode_length=episode_length,
         device=device,
         save_dir=str(save_dir),
-        step_log_dir=str(step_log_dir),
+        step_log_dir=None,   # disabled: per-step logs were a multi-GB disk hog on SCRATCH
         use_llm=use_llm,
         llama_model=llama_model,
         use_local_llama=use_llm,

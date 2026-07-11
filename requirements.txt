@@ -12,7 +12,7 @@ pyyaml>=5.3
 prettytable>=0.7
 
 # ----- LLM4Teach -----
-transformers>=4.40
+transformers>=4.51,<5     # >=4.51 for Qwen3 arch (Qwen3-4B); <5 keeps the tested 4.x API + numpy<2
 accelerate>=0.26
 bitsandbytes>=0.43
 huggingface-hub>=0.20

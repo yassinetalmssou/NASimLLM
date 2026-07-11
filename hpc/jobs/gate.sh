@@ -52,9 +52,11 @@ fi
 echo "GATE 1 PASS"
 
 # ── Gate 2: LLM loads in 4-bit on the GPU ────────────────────────────────────
+# Use the PRIMARY teacher (Qwen3-4B): it needs transformers>=4.51, so this gate
+# also catches a too-old transformers that would silently disable the LLM.
 echo ""
-echo "--- GATE 2: LLM loads in 4-bit (llama-1B) ---"
-GATE2_MODEL="$VSC_SCRATCH/llm_weights/llama-3.2-1B-Instruct"
+echo "--- GATE 2: LLM loads in 4-bit (Qwen3-4B, the primary teacher) ---"
+GATE2_MODEL="$VSC_SCRATCH/llm_weights/Qwen3-4B"
 if [ ! -d "$GATE2_MODEL" ]; then
     echo "GATE 2 FAIL: weights not found at $GATE2_MODEL"
     exit 1
