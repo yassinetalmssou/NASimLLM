@@ -109,9 +109,6 @@ def run_random_episodes(scenario: str, seed: int, num_episodes: int,
                 'cache_hits':        '',
                 'cache_misses':      '',
             })
-            if (ep + 1) % 50 == 0:
-                logger.info(f"  [random seed={seed}] ep {ep+1}/{num_episodes} "
-                            f"reward={total_r:.2f} comp={comp}/{total_h}")
 
     logger.info(f"Random results: {out_csv}")
 
@@ -171,9 +168,6 @@ def run_bruteforce_episodes(scenario: str, seed: int, num_episodes: int,
                 'cache_hits':        '',
                 'cache_misses':      '',
             })
-            if (ep + 1) % 50 == 0:
-                logger.info(f"  [bruteforce seed={seed}] ep {ep+1}/{num_episodes} "
-                            f"reward={total_r:.2f} comp={comp}/{total_h}")
 
     logger.info(f"Bruteforce results: {out_csv}")
 
@@ -187,7 +181,6 @@ def run_trainer_condition(condition: str, scenario: str, seed: int,
 
     save_dir = out_dir / scenario / condition / f"seed{seed}" / "ckpts"
     csv_path = out_dir / scenario / condition / f"seed{seed}" / "train.csv"
-    step_log_dir = out_dir / scenario / condition / f"seed{seed}" / "step_logs"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     use_llm = (condition == "llm_full")
@@ -199,7 +192,7 @@ def run_trainer_condition(condition: str, scenario: str, seed: int,
         episode_length=episode_length,
         device=device,
         save_dir=str(save_dir),
-        step_log_dir=None,   # disabled: per-step logs were a multi-GB disk hog on SCRATCH
+        step_log_dir=None,
         use_llm=use_llm,
         llama_model=llama_model,
         use_local_llama=use_llm,
@@ -263,7 +256,6 @@ def main():
 
     if args.parallel:
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Use scenario-specific filename so parallel calls from launch.sh don't overwrite each other
         cmd_file = out_dir / f"commands_{args.scenario}.txt"
         with open(cmd_file, "w") as f:
             for seed in args.seeds:
@@ -323,7 +315,7 @@ def main():
                     extra_kwargs=extra_kwargs,
                 )
 
-    logger.info("\nAll RQ1 conditions finished.")
+    logger.info("All RQ1 conditions finished.")
     logger.info(f"Results in: {out_dir.resolve()}")
 
 

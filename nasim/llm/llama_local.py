@@ -1,3 +1,4 @@
+"""Local LLaMA 3.1 chat client using transformers, with optional 4-bit quantization."""
 
 try:
     import torch

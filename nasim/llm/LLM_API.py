@@ -62,8 +62,8 @@ try:
 
             return content.strip()
 
-except Exception as e:  
-    class LLMAPIClient:  
+except Exception:
+    class LLMAPIClient:
         def __init__(self, *_, **__):
             raise ImportError(
                 "huggingface_hub is required for LLMAPIClient. Install with `pip install huggingface_hub`."

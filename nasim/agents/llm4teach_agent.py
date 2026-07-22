@@ -1,3 +1,5 @@
+"""LLM4Teach agent: PPO student network over high-level options with an optional avoid-list mask."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -84,7 +86,9 @@ class LLM4TeachAgent:
                  device: str = "cpu",
                  learning_rate: float = 3e-4,
                  gamma: float = 0.99,
-                 gae_lambda: float = 0.95):
+                 gae_lambda: float = 0.95,
+                 use_avoidlist_mask: bool = False,
+                 avoid_threshold: int = 2):
         self.state_dim = state_dim
         self.action_list = action_list
         self.num_options = num_options
@@ -100,7 +104,31 @@ class LLM4TeachAgent:
         
         self.optimizer = torch.optim.Adam(self.student.parameters(), lr=learning_rate)
         self.global_step = 0
-    
+
+        # Optional avoid-list mask: suppress actions that failed >= threshold times this episode.
+        self.use_avoidlist_mask = bool(use_avoidlist_mask)
+        self.avoid_threshold = int(avoid_threshold)
+        self._ep_action_fails: dict = {}
+        self._ep_avoid_blocks = 0
+        self._ep_avoid_redirects = 0
+
+    def reset_episode(self) -> None:
+        """Clear per-episode avoid-list state; call at the start of each episode."""
+        self._ep_action_fails.clear()
+        self._ep_avoid_blocks = 0
+        self._ep_avoid_redirects = 0
+
+    def record_action_result(self, action_idx: int, success: bool) -> None:
+        """Feed each executed action's outcome so the avoid-list tracks failures."""
+        if not success:
+            self._ep_action_fails[action_idx] = self._ep_action_fails.get(action_idx, 0) + 1
+
+    def get_avoid_metrics(self) -> dict:
+        """Per-episode avoid-list activity (blocks = suppressed a failing action;
+        redirects = the agent's top-preference action was the one suppressed)."""
+        return {"avoidlist_blocks": self._ep_avoid_blocks,
+                "avoidlist_redirects": self._ep_avoid_redirects}
+
     def choose_option(self, state: np.ndarray, training: bool = False,
                       teacher_probs: Optional[np.ndarray] = None,
                       mix_weight: float = 0.0) -> int:
@@ -206,20 +234,31 @@ class LLM4TeachAgent:
         
         if not matching_actions:
             return valid_candidates[0] if valid_candidates else (candidates[0] if candidates else 0)
-        
-        if len(matching_actions) == 1:
-            return matching_actions[0]
-        
+
+        # Drop actions that failed >= threshold times this episode, if alternatives remain.
+        pool = matching_actions
+        if self.use_avoidlist_mask and len(matching_actions) > 1:
+            allowed = [a for a in matching_actions
+                       if self._ep_action_fails.get(a, 0) < self.avoid_threshold]
+            if allowed and len(allowed) < len(matching_actions):
+                self._ep_avoid_blocks += 1
+                if matching_actions[0] not in allowed:
+                    self._ep_avoid_redirects += 1
+                pool = allowed
+
+        if len(pool) == 1:
+            return pool[0]
+
         state_t = torch.from_numpy(state).float().to(self.device)
         with torch.no_grad():
             logits, _ = self.student.forward(state_t)
             probs = F.softmax(logits, dim=-1)
-            
+
             option_conf = probs[option_id].item()
             if option_conf > 0.5:
-                return matching_actions[0]
+                return pool[0]
             else:
-                return np.random.choice(matching_actions)
+                return np.random.choice(pool)
     
     def compute_gae(self, rewards: np.ndarray,
                     values: np.ndarray,

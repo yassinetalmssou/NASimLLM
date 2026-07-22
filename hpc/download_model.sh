@@ -1,19 +1,7 @@
 #!/bin/bash
-################################################################################
-# hpc_download_model.sh — Download LLM model directly from HuggingFace on HPC
-#
-# Run on the HPC login node (no GPU needed, no job needed).
-#
-# Usage:
-#   bash hpc_download_model.sh <hf-repo-id> [local-name]
-#
-# Examples:
-#   bash hpc_download_model.sh Qwen/Qwen3-14B
-#   bash hpc_download_model.sh Qwen/Qwen3-14B qwen-14B
-#   bash hpc_download_model.sh meta-llama/Llama-3.2-1B-Instruct llama-1B
-#
-# The model lands in: $VSC_DATA/llm_weights/<local-name>/
-################################################################################
+# Download an LLM from HuggingFace into $VSC_SCRATCH/llm_weights (run on the HPC login node).
+# Usage: bash download_model.sh <hf-repo-id> [local-name]
+#   e.g. bash download_model.sh Qwen/Qwen3-14B qwen-14B
 
 set -e
 
@@ -33,34 +21,22 @@ fi
 HF_REPO="$1"
 LOCAL_NAME="${2:-$(echo "$HF_REPO" | cut -d'/' -f2)}"
 DEST="$VSC_SCRATCH/llm_weights/$LOCAL_NAME"
+echo "Repo:        $HF_REPO"
+echo "Destination: $DEST"
 
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║        HuggingFace Model Download on HPC                     ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-echo "  Repo:        $HF_REPO"
-echo "  Destination: $DEST  (VSC_SCRATCH — fast, no DATA quota used)"
-echo ""
-
-# Load Python module
+# Load Python and activate the venv (needs huggingface_hub).
 module purge
 module load Python/3.11.3-GCCcore-12.3.0 2>/dev/null \
   || module load Python/3.10.8-GCCcore-12.2.0
-
-# Activate venv (needs huggingface_hub)
 source "$VSC_DATA/.venvs/nasim/bin/activate"
-
-# Check if huggingface_hub is available
 python -c "import huggingface_hub" 2>/dev/null || {
     echo "Installing huggingface_hub..."
     pip install -q huggingface_hub
 }
 
+# Download the model snapshot.
 mkdir -p "$DEST"
-
-echo "Downloading $HF_REPO → $DEST"
-echo "(This may take a while for large models)"
-echo ""
-
+echo "Downloading $HF_REPO to $DEST (may take a while for large models)"
 python - <<EOF
 from huggingface_hub import snapshot_download
 import os
@@ -70,13 +46,8 @@ snapshot_download(
     local_dir="$DEST",
     ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*"],
 )
-print(f"\n✓ Downloaded to: $DEST")
+print(f"\nDownloaded to: $DEST")
 EOF
 
-echo ""
-echo "✓ Done! Model available at: $DEST"
-echo ""
-echo "Use in hpc/launch.sh:"
-echo "  bash hpc/launch.sh $LOCAL_NAME"
-echo ""
-echo "Or add to hpc/submit_all.sh MODELS list."
+echo "Done. Model available at: $DEST"
+echo "Add $LOCAL_NAME to a teacher list in hpc/submit_experiment.sh to use it."

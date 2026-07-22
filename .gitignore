@@ -44,6 +44,9 @@ nasim/agents/runs
 runs/
 models/
 llm_weights/
+logs/
+*.tar.gz
+figures/
 
 # Large binary / model files
 *.safetensors
@@ -52,8 +55,6 @@ llm_weights/
 *.pth
 
 .ipynb_checkpoints/
-
-*.ipynb
 
 .vscode/
 

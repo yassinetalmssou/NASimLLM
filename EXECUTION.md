@@ -142,39 +142,27 @@ a shorter run beats one seed on a long run for the variance story.
 
 ---
 
-## 5. Submit in priority tiers (essential first)
+## 5. Submit the experiment
 
-Generate command files, then submit selectively so the important jobs queue earliest:
+Both wrapper scripts run a fast GPU pre-flight gate (hpc/jobs/gate.sh) first; every array
+job waits on it with afterok. Submit the main experiment:
 
 ```bash
 cd $VSC_DATA/NASimLLM
-bash hpc/launch.sh $PRIMARY_TEACHER      # writes commands.txt per RQ/scenario, prints sbatch lines
+bash hpc/submit_experiment.sh --dry-run   # check task counts (87)
+bash hpc/submit_experiment.sh             # gate + RQ1/RQ2/RQ3 arrays
 ```
 
-**Tier 1 — Backbone (must-have; this alone is the thesis).**
-Submit the four-scenario × two-condition × 3-seed set for T\*. Use the `sbatch --array=...`
-lines `launch.sh` printed for the backbone (RQ2 set + the tiny/small/medium conditions).
-Then evaluate as each finishes (Section 6).
+This covers RQ1 (all 5 teachers on small), RQ2 (3-teacher panel across all scenarios), and
+RQ3 (primary teacher on small).
 
-**Tier 2 — RQ3 ablations on `small` only (only if Gate 3 passed).**
-Submit *just* the `small` rq3b array — not tiny, not medium:
+The extended RQ3 study (component ablations across all teachers including the working
+avoid-list, plus the hyperparameter sensitivity sweep) is submitted separately:
+
 ```bash
-sbatch --array=1-<N> hpc/jobs/rq3b.sh $VSC_SCRATCH/runs/$PRIMARY_TEACHER/rq3/commands_small.txt
+bash hpc/submit_rq3_extended.sh --dry-run   # check task counts (144)
+bash hpc/submit_rq3_extended.sh
 ```
-
-**Tier 3 — Teacher scaling on `small` only (optional; first to drop).**
-For each of the other four models, generate and submit only the `small llm_full` task:
-```bash
-for M in llama-1B llama-3B llama-8B qwen-8B; do
-  bash hpc/launch.sh $M
-  # submit only the small/llm_full line from the printed sbatch commands for $M
-done
-```
-The 8B models run ONLY here.
-
-> `bash hpc/submit_all.sh $PRIMARY_TEACHER` submits every RQ × every scenario for a model in
-> one go. Convenient, but it also fires RQ3 on all three scenarios and does not respect the
-> tiering — prefer the selective `sbatch` above when time is the constraint.
 
 ---
 
@@ -192,12 +180,13 @@ GPU job clears, your results are essentially ready.
 
 ## 7. Render the figures
 
-Pull `results.csv` locally and render:
+Download the runs locally, then generate the figures from the per-seed train.csv files:
 ```bash
-python analysis/plot_thesis_figures.py --results results.csv
-# preview styling with no data:  python analysis/plot_thesis_figures.py --demo --outdir preview
+python analysis/make_rq_figures.py
 ```
-Outputs `figures/rq1_effectiveness`, `rq2_generalization`, `rq3_ablations` as PNG + PDF.
+This writes the RQ1/RQ2/RQ3 figures and the extra diagnostics as PNG into figures/. The
+held-out evaluation path (eval.sh -> results.csv -> analysis/plot_thesis_figures.py) is an
+optional alternative.
 
 ---
 

@@ -7,21 +7,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gpus=1
 #SBATCH --partition=ampere_gpu
-################################################################################
-# hpc/jobs/gate.sh — fast pre-flight gate before committing GPU-hours.
-#
-# Purpose: catch a broken environment (venv/torch/transformers/bitsandbytes,
-# wrong module, no GPU, missing weights) in ~20 min instead of at hour 20 of a
-# 24h array job. submit_experiment.sh chains the real jobs with
-# --dependency=afterok on THIS job, so if any gate fails the backbone never runs.
-#
-# Gate 1 — the harness trains + evaluates WITHOUT the LLM (env + torch + PPO).
-# Gate 2 — the LLM actually loads in 4-bit on the GPU (llama-1B = fastest).
-#          We assert config.json shows use_llm=true; the trainer silently falls
-#          back to no-LLM if the model fails to load, and that flag exposes it.
-#
-# Submit standalone:  sbatch hpc/jobs/gate.sh
-################################################################################
+# Pre-flight gate: fail fast on a broken env, GPU, or weights before spending GPU-hours.
+# Usage: sbatch hpc/jobs/gate.sh
 set -euo pipefail
 
 module purge
@@ -34,13 +21,7 @@ cd "$VSC_DATA/NASimLLM"
 source "$VSC_DATA/.venvs/nasim/bin/activate"
 mkdir -p logs
 
-echo "======================================================================"
-echo " NASimLLM pre-flight gate   |   $(date)   |   node ${SLURM_NODELIST:-local}"
-echo "======================================================================"
-
-# ── Gate 1: harness without the LLM ──────────────────────────────────────────
-echo ""
-echo "--- GATE 1: harness trains + evaluates without LLM ---"
+# Gate 1: harness trains and evaluates without the LLM.
 rm -rf runs/_gate/smoke
 python -m nasim.train_llm4teach --scenario tiny --no-llm --episodes 5 \
     --episode-length 200 --save-dir runs/_gate/smoke/ckpts --no-step-logs
@@ -51,11 +32,7 @@ if [ ! -f runs/_gate/smoke/eval_summary.json ]; then
 fi
 echo "GATE 1 PASS"
 
-# ── Gate 2: LLM loads in 4-bit on the GPU ────────────────────────────────────
-# Use the PRIMARY teacher (Qwen3-4B): it needs transformers>=4.51, so this gate
-# also catches a too-old transformers that would silently disable the LLM.
-echo ""
-echo "--- GATE 2: LLM loads in 4-bit (Qwen3-4B, the primary teacher) ---"
+# Gate 2: LLM loads in 4-bit on the GPU (Qwen3-4B, the primary teacher).
 GATE2_MODEL="$VSC_SCRATCH/llm_weights/Qwen3-4B"
 if [ ! -d "$GATE2_MODEL" ]; then
     echo "GATE 2 FAIL: weights not found at $GATE2_MODEL"
@@ -72,15 +49,12 @@ path = sys.argv[1]
 try:
     cfg = json.load(open(path, encoding="utf-8"))
 except FileNotFoundError:
-    print(f"GATE 2 FAIL: {path} not written — training crashed before config."); sys.exit(1)
+    print(f"GATE 2 FAIL: {path} not written - training crashed before config."); sys.exit(1)
 if not cfg.get("use_llm", False):
-    print("GATE 2 FAIL: config use_llm=false → the LLM did NOT initialise.")
+    print("GATE 2 FAIL: config use_llm=false -> the LLM did NOT initialise.")
     print("            Check bitsandbytes / transformers / CUDA in the venv.")
     sys.exit(1)
 print("GATE 2 PASS: config use_llm=true, LLM initialised on GPU.")
 PY
 
-echo ""
-echo "======================================================================"
-echo " ALL GATES PASSED — environment is sound, backbone may run."
-echo "======================================================================"
+echo "All gates passed."

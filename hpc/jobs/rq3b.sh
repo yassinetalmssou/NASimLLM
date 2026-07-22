@@ -8,6 +8,8 @@
 #SBATCH --gpus=1
 #SBATCH --partition=ampere_gpu
 
+# RQ3b array job: run one command per array task from a command file, then sync results.
+
 set -e
 
 module purge
@@ -41,24 +43,12 @@ fi
 
 COMMAND=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$COMMAND_FILE")
 
-echo "======================================================================"
-echo "SLURM Job Information"
-echo "======================================================================"
-echo "Job ID:       $SLURM_JOB_ID"
-echo "Array Task:   $SLURM_ARRAY_TASK_ID / $TOTAL_COMMANDS"
-echo "Node:         $SLURM_NODELIST"
-echo "Partition:    $SLURM_JOB_PARTITION"
-echo "Start Time:   $(date)"
-echo "======================================================================"
-echo "Command:"
-echo "$COMMAND"
-echo "======================================================================"
-
-echo ""
-echo "Starting experiment..."
+# Run the selected command.
+echo "Command: $COMMAND"
 eval $COMMAND
 EXIT_CODE=$?
 
+# Sync results from SCRATCH back to DATA.
 RESULTS_SRC="$(dirname "$COMMAND_FILE")"
 RESULTS_DST="${RESULTS_SRC/$VSC_SCRATCH/$VSC_DATA}"
 if [ -d "$RESULTS_SRC" ]; then
@@ -67,14 +57,8 @@ if [ -d "$RESULTS_SRC" ]; then
     echo "Results synced to $RESULTS_DST (also kept on SCRATCH)"
 fi
 
-echo ""
-echo "======================================================================"
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "Job completed successfully"
-else
+if [ $EXIT_CODE -ne 0 ]; then
     echo "Job failed with exit code: $EXIT_CODE"
 fi
-echo "End Time: $(date)"
-echo "======================================================================"
 
 exit $EXIT_CODE

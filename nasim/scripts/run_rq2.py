@@ -44,7 +44,7 @@ def build_command(
     batch_size: int,
     num_epochs: int,
 ) -> List[str]:
-    """Build train_llm4teach command for specific condition × scenario."""
+    """Build train_llm4teach command for specific condition x scenario."""
 
     save_dir = out_dir / scenario / condition / f"seed{seed}" / "ckpts"
 
@@ -74,7 +74,7 @@ def build_command(
 
     if condition == "llm_full":
         cmd.extend(["--llama-model", llama_model])
-    else:  # ppo_options
+    else:
         cmd.append("--no-llm")
 
     return cmd
@@ -111,7 +111,6 @@ def run_experiment(
     )
 
     cmd_str = " ".join(cmd)
-    logger.info(f"Running: {condition}/{scenario}/seed{seed}")
 
     if dry_run:
         print(cmd_str)

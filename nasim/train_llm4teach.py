@@ -1,3 +1,9 @@
+"""Train an LLM4Teach agent (PPO over options with an LLM teacher) on NASim.
+
+Runs the rollout/update loop, applies reward shaping, and logs per-episode
+metrics to CSV. The LLM teacher scores options each step and its influence
+is annealed via the lambda schedule.
+"""
 import argparse
 import csv
 import json
@@ -82,6 +88,7 @@ class LLM4TeachTrainer:
                  csv_log: Optional[str] = None,
                  use_history_mechanism: bool = True,
                  use_avoidlist: bool = True,
+                 use_avoidlist_mask: bool = False,
                  use_compact_prompt: bool = True,
                  llm_call_frequency: str = "every_step",
                  condition: str = ""):
@@ -98,7 +105,6 @@ class LLM4TeachTrainer:
         self.device = device
         self.save_dir = Path(save_dir) if save_dir else None
         self.step_log_dir = Path(step_log_dir) if step_log_dir else None
-        # 0 = only the final checkpoint (disk-frugal); >0 = also every N episodes.
         self.ckpt_every = int(ckpt_every)
         self.use_llm = use_llm
         self.prompt_variant = prompt_variant
@@ -117,9 +123,9 @@ class LLM4TeachTrainer:
         
         self.use_history_mechanism = use_history_mechanism
         self.use_avoidlist = use_avoidlist
+        self.use_avoidlist_mask = use_avoidlist_mask
         self.use_compact_prompt = use_compact_prompt
         self.llm_call_frequency = llm_call_frequency
-        # Resolve condition label for config.json (auto-detect if blank)
         if condition:
             self.condition = condition
         else:
@@ -160,9 +166,10 @@ class LLM4TeachTrainer:
             learning_rate=learning_rate,
             gamma=gamma,
             gae_lambda=gae_lambda,
+            use_avoidlist_mask=use_avoidlist_mask,
         )
         
-        self.llm_advisor = None  # default; set below if LLM is enabled
+        self.llm_advisor = None
         if self.use_llm:
             llm_client = None
             
@@ -244,7 +251,7 @@ class LLM4TeachTrainer:
         return f"{aux_table}\n\n{host_table_str}"
 
     def summarize_state(self, state: np.ndarray):
-
+        """Build a human-readable network summary and return readable host/aux obs."""
         state_shape = self.env.current_state.shape()
         num_hosts = state_shape[0]
         features_per_host = state_shape[1]
@@ -420,26 +427,7 @@ class LLM4TeachTrainer:
                   "Sensitive", "Discovery Value", "Access"}
 
     def compact_state_summary(self, host_obs: list, aux_obs: dict) -> str:
-        """Compact ~40-token state representation for the LLM teacher.
-
-        Format (generics across all NASim scenarios)::
-
-            0c/8h | 0/2s | FAIL-conn
-            S1(1h): (1,0)R[http,ssh]
-            S2*(1h): (2,0)S:!R[ssh,ftp,tomcat]
-            S3(5h): 5?
-            S4*(1h): (4,0)S:!R[ssh,ftp,tomcat]
-
-        Legend (also in system prompt):
-          Xc/Yh  = X of Y hosts compromised
-          X/Ys   = X of Y sensitive targets secured
-          OK / FAIL / FAIL-conn / FAIL-perm  = last action result
-          S1*(Nh) = subnet 1, N hosts, * = contains sensitive target
-          C:ROOT / C:USER  = compromised (access level)
-          R[svcs] = reachable host,  !R[svcs] = NOT reachable (need pivot)
-          S:R / S:!R = sensitive target, reachable / not reachable
-          N?   = N unreachable/undiscovered hosts
-        """
+        """Compact, low-token state representation for the LLM teacher."""
         if host_obs is None or aux_obs is None:
             return "OBS_ERR"
 
@@ -517,6 +505,7 @@ class LLM4TeachTrainer:
         List[np.ndarray], List[int], List[int], np.ndarray,
         np.ndarray, np.ndarray
     ]:
+        """Run one episode, apply reward shaping, and return the rollout tensors."""
         obs, _ = self.env.reset()
         
         states = []
@@ -538,6 +527,7 @@ class LLM4TeachTrainer:
         compromised_subnets = set()
         action_history = []
         host_failure_counts = {}
+        self.agent.reset_episode()
 
         prev_option_id: int = None
         prev_action_desc: str = None
@@ -582,6 +572,7 @@ class LLM4TeachTrainer:
             prev_action_desc = str(self.action_list[action_idx])
 
             next_obs, reward, done, truncated, info = self.env.step(action_idx)
+            self.agent.record_action_result(action_idx, success=(reward != -1))
 
             episode_end = bool(done or truncated)
             
@@ -742,13 +733,13 @@ class LLM4TeachTrainer:
         self.episode_rewards.append(episode_reward)
         self.episode_lengths.append(step)
 
-        # Use env.goal_reached() for a reliable success signal independent of shaped rewards
         self._collect_episode_metrics(states, option_ids, actions, rewards_arr,
                                        self.env.goal_reached())
         
         return states, option_ids, actions, rewards_arr, dones_arr, teacher_probs_arr
     
     def _collect_episode_metrics(self, states, option_ids, actions, rewards, success):
+        """Record per-episode success, compromise/discovery rates, and option usage."""
         try:
             if states:
                 _, final_hosts, final_aux = self.summarize_state(states[-1])
@@ -781,6 +772,7 @@ class LLM4TeachTrainer:
             logger.debug(f"Metrics collection failed: {e}")
     
     def train_episode(self, episode_idx: int):
+        """Collect a rollout, update the agent, advance lambda, and log/checkpoint."""
         if self.lambda_mode == "fixed":
             lambda_kl = self.lambda_start * (self.lambda_decay ** episode_idx)
             self.current_lambda = lambda_kl
@@ -912,6 +904,8 @@ class LLM4TeachTrainer:
                 'cache_hits':        ep_cache_hits,
                 'cache_misses':      ep_cache_misses,
                 'avoidlist_used':    guidance_metrics.get('avoidlist_used', 0),
+                'avoidlist_blocks':    self.agent.get_avoid_metrics()['avoidlist_blocks'],
+                'avoidlist_redirects': self.agent.get_avoid_metrics()['avoidlist_redirects'],
             })
             self._csv_file.flush()
 
@@ -930,7 +924,7 @@ class LLM4TeachTrainer:
                         f"Episode {episode_idx + 1}/{self.num_episodes} | "
                         f"Reward: {self.episode_rewards[-1]:.2f} (avg: {avg_reward:.2f}) | "
                         f"Length: {self.episode_lengths[-1]:.0f} (avg: {avg_length:.1f}) | "
-                        f"λ: {lambda_kl:.4f}\n"
+                        f"lambda: {lambda_kl:.4f}\n"
                         f"  Hosts compromised: {curr_sensitive_comp:.0f}/{self.total_sensitive_hosts} | "
                         f"Discovery: {curr_discovery:.1%} | "
                         f"Loss (actor/kl): {metrics['loss_actor']:.3f} / {metrics['loss_kl_norm']:.3f} | "
@@ -945,7 +939,7 @@ class LLM4TeachTrainer:
                         f"Episode {episode_idx + 1}/{self.num_episodes} | "
                         f"Reward: {self.episode_rewards[-1]:.2f} (avg: {avg_reward:.2f}) | "
                         f"Length: {self.episode_lengths[-1]:.0f} (avg: {avg_length:.1f}) | "
-                        f"λ: {lambda_kl:.4f} | "
+                        f"lambda: {lambda_kl:.4f} | "
                         f"Loss (actor/kl): {metrics['loss_actor']:.4f} / {metrics['loss_kl_norm']:.4f}"
                     )
         
@@ -955,21 +949,16 @@ class LLM4TeachTrainer:
             logger.info(f"Saved checkpoint: {ckpt_path}")
     
     def train(self):
-        """Run full training loop."""
-        logger.info("=" * 60)
-        logger.info("Starting LLM4Teach Training")
-        logger.info("=" * 60)
-        logger.info(f"Scenario: {self.scenario_name}")
-        logger.info(f"Episodes: {self.num_episodes}")
-        logger.info(f"Episode length: {self.episode_length}")
-        logger.info(f"Fully observable: {self.fully_obs}" if self.fully_obs else f"Partial observability: {not self.fully_obs}")
+        """Run the full training loop and write the final summary/checkpoint."""
+        logger.info(
+            f"Starting training: scenario={self.scenario_name} | episodes={self.num_episodes} | "
+            f"episode_length={self.episode_length} | fully_obs={self.fully_obs} | "
+            f"llm={self.use_llm} (prompt={self.prompt_variant}) | device={self.device}"
+        )
         if self.lambda_mode == "fixed":
-            logger.info(f"\u03bb annealing: {self.lambda_start} \u2192 {self.lambda_start * (self.lambda_decay ** self.num_episodes):.4f} (decay={self.lambda_decay})")
+            logger.info(f"lambda annealing: {self.lambda_start} -> {self.lambda_start * (self.lambda_decay ** self.num_episodes):.4f} (decay={self.lambda_decay})")
         else:
-            logger.info(f"\u03bb mode: {self.lambda_mode} | start={self.lambda_start} | min={self.lambda_min} | kl_target={self.kl_target}")
-        logger.info(f"LLM teacher: {self.use_llm} (prompt={self.prompt_variant})")
-        logger.info(f"Device: {self.device}")
-        logger.info("=" * 60)
+            logger.info(f"lambda mode: {self.lambda_mode} | start={self.lambda_start} | min={self.lambda_min} | kl_target={self.kl_target}")
 
         _CSV_FIELDS = [
             'episode', 'reward', 'avg_reward_10', 'length',
@@ -977,7 +966,7 @@ class LLM4TeachTrainer:
             'hosts_compromised', 'hosts_total', 'compromise_rate', 'discovery_pct',
             'loss_actor', 'loss_critic', 'loss_kl_norm', 'clip_pct', 'teacher_agree', 'success',
             't_rollout_s', 't_ppo_s', 't_llm_s', 't_episode_s', 'cache_hits', 'cache_misses',
-            'avoidlist_used',
+            'avoidlist_used', 'avoidlist_blocks', 'avoidlist_redirects',
         ]
         if self.csv_log_path:
             self.csv_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1007,6 +996,7 @@ class LLM4TeachTrainer:
                 "condition": self.condition,
                 "use_history_mechanism": self.use_history_mechanism,
                 "use_avoidlist": self.use_avoidlist,
+                "use_avoidlist_mask": self.use_avoidlist_mask,
                 "use_compact_prompt": self.use_compact_prompt,
                 "llm_call_frequency": self.llm_call_frequency,
                 "learning_rate": self.agent.optimizer.param_groups[0]['lr'],
@@ -1026,8 +1016,7 @@ class LLM4TeachTrainer:
                 self._csv_file = None
                 self._csv_writer = None
         
-        logger.info("=" * 60)
-        logger.info("Training Complete!")
+        logger.info("Training complete")
         logger.info(f"Final episode reward: {self.episode_rewards[-1]:.2f}")
         logger.info(f"Average reward (last 10 eps): {np.mean(self.episode_rewards[-10:]):.2f}")
         logger.info(f"Max reward: {np.max(self.episode_rewards):.2f}")
@@ -1049,6 +1038,7 @@ class LLM4TeachTrainer:
             logger.info(f"Saved final checkpoint: {final_ckpt}")
     
     def evaluate(self, num_episodes: int = 5, render: bool = False) -> float:
+        """Run greedy evaluation episodes and return the mean reward."""
         eval_rewards = []
         
         for ep in range(num_episodes):
@@ -1075,6 +1065,7 @@ class LLM4TeachTrainer:
 
 
 def main():
+    """Parse CLI arguments and run training or evaluation."""
     parser = argparse.ArgumentParser(
         description="Train LLM4Teach agent on NASim environment"
     )
@@ -1143,13 +1134,17 @@ def main():
                         help="Disable avoidlist (don't track failed action pairs)")
     parser.add_argument("--verbose-prompt", action="store_false", dest="use_compact_prompt",
                         help="Use verbose prompts instead of compact nomad-style")
+    parser.add_argument("--avoidlist-mask", action="store_true", dest="use_avoidlist_mask",
+                        help="Enable the WORKING avoid-list: at action-selection, mask concrete "
+                             "actions that failed >=2x this episode (decoupled from the LLM cache)")
     parser.add_argument("--llm-call-freq", type=str, default="every_step",
                         choices=["every_step", "cached", "reduced"],
                         help="LLM call frequency (default: every_step)")
     parser.add_argument("--ckpt-every", type=int, default=0,
                         help="Save an intermediate checkpoint every N episodes "
                              "(0 = only the final checkpoint; keeps disk usage low)")
-    parser.set_defaults(use_history=True, use_avoidlist=True, use_compact_prompt=True)
+    parser.set_defaults(use_history=True, use_avoidlist=True, use_compact_prompt=True,
+                        use_avoidlist_mask=False)
 
     args = parser.parse_args()
 
@@ -1191,6 +1186,7 @@ def main():
         csv_log=None,
         use_history_mechanism=args.use_history,
         use_avoidlist=args.use_avoidlist,
+        use_avoidlist_mask=args.use_avoidlist_mask,
         use_compact_prompt=args.use_compact_prompt,
         llm_call_frequency=args.llm_call_freq,
         condition=args.condition,

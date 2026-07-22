@@ -1,9 +1,9 @@
 """Plot thesis figures for NASimLLM.
 
 Generates three publication-quality figures from results.csv:
-  rq1_effectiveness  — dot-and-CI plot (success rate per scenario/condition)
-  rq2_generalization — slope graph (LLM-full vs PPO across scenarios)
-  rq3_ablations      — horizontal tornado chart (vs full baseline)
+  rq1_effectiveness  - dot-and-CI plot (success rate per scenario/condition)
+  rq2_generalization - slope graph (LLM-full vs PPO across scenarios)
+  rq3_ablations      - horizontal tornado chart (vs full baseline)
 
 Figures are saved as PNG (300 dpi) and PDF in --out-dir.
 
@@ -37,13 +37,12 @@ matplotlib.rcParams.update({
     "figure.dpi": 150,
 })
 
-# ── Okabe-Ito palette ─────────────────────────────────────────────────────────
+# Okabe-Ito palette
 PALETTE = {
     "llm_full":        "#0072B2",
     "ppo_options":     "#D55E00",
     "random":          "#999999",
     "bruteforce":      "#F0E442",
-    # RQ3 ablations
     "full":            "#0072B2",
     "no_history":      "#E69F00",
     "no_avoidlist":    "#009E73",
@@ -53,14 +52,12 @@ PALETTE = {
 
 SCENARIO_ORDER = ["tiny", "small", "small-linear", "medium"]
 
-# ── Synthetic demo data ───────────────────────────────────────────────────────
 
 def _make_demo_df() -> pd.DataFrame:
     """Generate plausible synthetic data for all three RQs."""
     records = []
     rng = np.random.default_rng(42)
 
-    # RQ1 — llm_full vs ppo_options vs random
     rq1_rates = {
         "tiny":         {"llm_full": 0.90, "ppo_options": 0.82, "random": 0.15},
         "small":        {"llm_full": 0.76, "ppo_options": 0.67, "random": 0.08},
@@ -85,7 +82,6 @@ def _make_demo_df() -> pd.DataFrame:
                     "policy": "checkpoint",
                 })
 
-    # RQ2 — generalisation (same scenarios, model only trained on tiny)
     for scenario, conds in rq1_rates.items():
         for cond in ["llm_full", "ppo_options"]:
             rate = conds[cond] * (0.9 if scenario != "tiny" else 1.0)
@@ -104,7 +100,6 @@ def _make_demo_df() -> pd.DataFrame:
                 "policy": "checkpoint",
             })
 
-    # RQ3 ablations (tiny only)
     ablation_rates = {
         "full":           0.88,
         "no_history":     0.73,
@@ -132,8 +127,6 @@ def _make_demo_df() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-# ── Saving helper ─────────────────────────────────────────────────────────────
-
 def _save(fig: plt.Figure, name: str, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf"):
@@ -143,14 +136,12 @@ def _save(fig: plt.Figure, name: str, out_dir: Path):
     plt.close(fig)
 
 
-# ── Figure 1 — RQ1 Effectiveness ─────────────────────────────────────────────
-
+# RQ1 effectiveness: success rate per scenario/condition
 def plot_rq1(df: pd.DataFrame, out_dir: Path):
     rq1 = df[df["rq"] == "rq1"].copy()
     conditions = ["llm_full", "ppo_options", "random"]
     present = [c for c in conditions if c in rq1["condition"].unique()]
 
-    # Aggregate over seeds: mean success_rate + min/max CI
     agg = (
         rq1.groupby(["scenario", "condition"])
            .agg(
@@ -189,15 +180,14 @@ def plot_rq1(df: pd.DataFrame, out_dir: Path):
     ax.set_ylim(-0.05, 1.05)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
     ax.set_ylabel("Success rate")
-    ax.set_title("RQ1 — Effectiveness of LLM-guided training")
+    ax.set_title("RQ1 - Effectiveness of LLM-guided training")
     ax.legend(loc="upper right")
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
     _save(fig, "rq1_effectiveness", out_dir)
 
 
-# ── Figure 2 — RQ2 Generalisation ────────────────────────────────────────────
-
+# RQ2 generalisation: slope graph across scenarios
 def plot_rq2(df: pd.DataFrame, out_dir: Path):
     rq2 = df[df["rq"] == "rq2"].copy()
     conditions = ["llm_full", "ppo_options"]
@@ -222,7 +212,6 @@ def plot_rq2(df: pd.DataFrame, out_dir: Path):
             label=cond.replace("_", " "),
         )
 
-    # Shade the two middle topologies
     if "small" in scenarios and "small-linear" in scenarios:
         idx_s  = scenarios.index("small")
         idx_sl = scenarios.index("small-linear")
@@ -233,15 +222,14 @@ def plot_rq2(df: pd.DataFrame, out_dir: Path):
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
     ax.set_ylabel("Success rate")
     ax.set_xlabel("Scenario")
-    ax.set_title("RQ2 — Generalisation across scenarios")
+    ax.set_title("RQ2 - Generalisation across scenarios")
     ax.legend(loc="upper right")
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
     _save(fig, "rq2_generalization", out_dir)
 
 
-# ── Figure 3 — RQ3 Ablations ─────────────────────────────────────────────────
-
+# RQ3 ablations: tornado chart vs full baseline
 def plot_rq3(df: pd.DataFrame, out_dir: Path):
     rq3 = df[df["rq"] == "rq3"].copy()
     ablation_order = ["no_history", "no_avoidlist", "verbose_prompt", "llm_cached"]
@@ -260,7 +248,7 @@ def plot_rq3(df: pd.DataFrame, out_dir: Path):
 
     scenarios = [s for s in SCENARIO_ORDER if s in agg["scenario"].unique()]
     if not scenarios:
-        print("  [RQ3] No data — skipping figure.")
+        print("  [RQ3] No data - skipping figure.")
         return
 
     fig, axes = plt.subplots(
@@ -293,12 +281,10 @@ def plot_rq3(df: pd.DataFrame, out_dir: Path):
         ax.grid(axis="x", linestyle="--", alpha=0.4)
 
     axes[0].set_ylabel("Ablation condition")
-    fig.suptitle("RQ3 — Ablation analysis (vs. full LLM)", y=1.02)
+    fig.suptitle("RQ3 - Ablation analysis (vs. full LLM)", y=1.02)
     fig.tight_layout()
     _save(fig, "rq3_ablations", out_dir)
 
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Generate thesis figures for NASimLLM")
@@ -314,7 +300,6 @@ def main():
     out_dir = Path(args.out_dir)
 
     if args.demo:
-        print("Using synthetic demo data …")
         df = _make_demo_df()
     else:
         p = Path(args.results)
@@ -322,13 +307,9 @@ def main():
             sys.exit(f"ERROR: {p} not found. Run build_results_table.py first, or pass --demo.")
         df = pd.read_csv(p)
 
-    print("Plotting RQ1 …")
     plot_rq1(df, out_dir)
-    print("Plotting RQ2 …")
     plot_rq2(df, out_dir)
-    print("Plotting RQ3 …")
     plot_rq3(df, out_dir)
-    print("All figures written to", out_dir)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-################################################################################
-# hpc_upload_weights.sh — Upload LLM weights to VUB Hydra HPC
-#
+# Upload LLM weights from local llm_weights/ to $VSC_SCRATCH/llm_weights on VUB Hydra HPC.
 # Run locally in Git Bash from the project root.
-# Uploads the models in llm_weights/ to $VSC_DATA/llm_weights/ on the HPC.
-#
 # Usage:
-#   bash hpc_upload_weights.sh                       # upload all models
-#   bash hpc_upload_weights.sh llama-3.2-1B-Instruct # upload one model
-################################################################################
+#   bash hpc/upload_weights.sh                        # upload all models
+#   bash hpc/upload_weights.sh llama-3.2-1B-Instruct  # upload one model
 
 set -e
 
@@ -17,15 +12,10 @@ HPC_HOST="login.hpc.vub.be"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 WEIGHTS_DIR="$SCRIPT_DIR/llm_weights"
 
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║       LLM Weights → VUB Hydra HPC Upload                     ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-
-# Determine which models to upload
+# Determine which models to upload (all subdirectories by default).
 if [ $# -gt 0 ]; then
     MODELS=("$@")
 else
-    # Default: all subdirectories in llm_weights/
     MODELS=()
     for d in "$WEIGHTS_DIR"/*/; do
         MODELS+=("$(basename "$d")")
@@ -43,23 +33,19 @@ for MODEL in "${MODELS[@]}"; do
     fi
 
     SIZE=$(du -sh "$MODEL_PATH" 2>/dev/null | cut -f1)
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Uploading: $MODEL  ($SIZE)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Create remote directory
+    # Create remote directory.
     ssh "${HPC_USER}@${HPC_HOST}" "mkdir -p \$VSC_SCRATCH/llm_weights/${MODEL}"
 
-    # Stream tar over SSH
+    # Stream tar over SSH.
     tar -czf - -C "$WEIGHTS_DIR" "$MODEL" \
         | ssh "${HPC_USER}@${HPC_HOST}" \
             "tar -xzf - -C \$VSC_SCRATCH/llm_weights"
 
-    echo "✓ Done: $MODEL"
+    echo "Done: $MODEL"
     echo ""
 done
 
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                    Upload complete!                           ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
+echo "Upload complete."
 echo "Verify on HPC:  ls \$VSC_SCRATCH/llm_weights/"

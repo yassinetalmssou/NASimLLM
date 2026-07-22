@@ -1,4 +1,90 @@
-**Status**: Stable release. No extra development is planned, but still being maintained (bug fixes, etc).
+NASimLLM - LLM4Teach for penetration-testing agents
+====================================================
+
+Codebase for a master's thesis on LLM-guided reinforcement learning for network
+penetration testing. It extends NASim (Network Attack Simulator) with a PPO agent
+over high-level options that is trained with an LLM "teacher": the LLM scores the
+options each step and its influence is annealed over training. The experiments
+study whether, and which, LLMs make effective teachers for RL pentest agents.
+
+
+Repository layout
+-----------------
+
+- ``nasim/train_llm4teach.py`` - trainer (PPO over options with an LLM teacher).
+- ``nasim/agents/llm4teach_agent.py`` - PPO student agent and option logic.
+- ``nasim/llm/`` - LLM advisor, local model loader, and prompt templates.
+- ``nasim/scripts/`` - experiment command generators (``run_rq1`` / ``run_rq2`` / ``run_rq3b`` / ``gen_rq3_extended``) and evaluation.
+- ``hpc/`` - SLURM submission and job scripts for the VUB Hydra cluster.
+- ``analysis/`` - figure generation from the per-seed ``train.csv`` files.
+- ``notebooks/`` - RQ1/RQ2/RQ3 analysis notebooks (run them to reproduce the figures).
+- ``EXECUTION.md`` - full run plan and design rationale.
+
+
+Installation
+------------
+
+Requires Python 3.11. Install PyTorch (CUDA build) first, then the rest::
+
+  pip install torch --index-url https://download.pytorch.org/whl/cu121
+  pip install -r requirements.txt
+  pip install -e .
+
+On a CPU-only machine (no GPU, no 4-bit LLM) install the CPU PyTorch build instead.
+Gated teacher models (Llama) need a HuggingFace token in the
+``HUGGINGFACEHUB_API_TOKEN`` environment variable; Qwen models are open.
+
+
+Running a single training run (local)
+-------------------------------------
+
+With an LLM teacher on the ``small`` scenario::
+
+  python -m nasim.train_llm4teach --scenario small --episodes 1000 \
+      --llama-model <path-to-model> --device cuda --save-dir runs/demo/ckpts
+
+Without the LLM teacher (PPO baseline)::
+
+  python -m nasim.train_llm4teach --scenario small --episodes 1000 --no-llm \
+      --save-dir runs/demo_ppo/ckpts
+
+Each run writes ``train.csv`` (one row per episode) next to ``--save-dir``.
+
+
+Running the full experiment (VUB Hydra HPC)
+-------------------------------------------
+
+The experiments run as SLURM array jobs. On the VUB network (or VPN), push the
+code and set up the environment::
+
+  bash hpc/upload.sh                         # local: copy code to $VSC_DATA/NASimLLM
+
+Then on the login node::
+
+  cd $VSC_DATA/NASimLLM
+  bash hpc/setup.sh                          # one-time venv + dependencies
+  bash hpc/submit_experiment.sh --dry-run    # check task counts (87)
+  bash hpc/submit_experiment.sh              # gate + RQ1/RQ2/RQ3 arrays
+  bash hpc/submit_rq3_extended.sh            # extended RQ3 (ablations + sensitivity)
+
+Teacher weights go under ``$VSC_SCRATCH/llm_weights/<alias>`` (aliases listed in
+``hpc/submit_experiment.sh``). Each submit script first runs a short GPU gate; the
+array jobs wait on it with ``afterok``. Results are written to ``$VSC_SCRATCH/runs/``
+and synced to ``$VSC_DATA/runs/``.
+
+
+Analysis
+--------
+
+Download the ``runs/`` tree locally, then either run the notebooks in
+``notebooks/`` or generate every figure at once::
+
+  python analysis/make_rq_figures.py         # writes PNGs to figures/
+
+
+----
+
+The original NASim documentation follows.
 
 
 Network Attack Simulator

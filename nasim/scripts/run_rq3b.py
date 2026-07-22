@@ -128,10 +128,7 @@ def run_experiment(
         llm_mix_weight=llm_mix_weight, hidden_dim=hidden_dim,
         learning_rate=learning_rate, batch_size=batch_size, num_epochs=num_epochs,
     )
-    
-    ablation = ABLATIONS[ablation_name]
-    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Running: {ablation_name} (seed {seed})")
-    
+
     if dry_run:
         return True
     
@@ -231,8 +228,6 @@ def main():
     logger.info(f"RQ3b: Scenario={args.scenario} | Ablations={', '.join(ablations)} | Seeds={args.seeds}")
     
     if args.parallel:
-        logger.info(f"[PARALLEL MODE] Generating commands")
-        # Use scenario-specific filename so parallel calls from launch.sh don't overwrite each other
         cmd_file = out_dir / f"commands_{args.scenario}.txt"
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -264,7 +259,7 @@ def main():
     for i, (ablation, seed) in enumerate(
         [(a, s) for a in ablations for s in args.seeds], start=1
     ):
-        logger.info(f"\n[{i}/{total}] Starting: {ablation} / seed{seed}")
+        logger.info(f"[{i}/{total}] {ablation}/seed{seed}")
         
         success = run_experiment(
             ablation, args.scenario, args.episodes, seed,

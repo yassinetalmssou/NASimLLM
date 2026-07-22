@@ -1,3 +1,5 @@
+"""Prompt templates for the LLM4Teach option-scoring advisor."""
+
 SCORE_OPTIONS_SYSTEM = """You are a cybersecurity expert guiding a reinforcement learning agent in NASim (Network Attack Simulator).
 
 ENVIRONMENT:

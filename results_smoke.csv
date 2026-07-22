@@ -1,2 +1,0 @@
-model,rq,scenario,condition,train_seed,success_rate,success_ci_low,success_ci_high,mean_return,std_return,median_steps_to_success,policy,eval_episodes,run_dir
-tiny,rq1,tiny,ppo_options,0,0.0,0.0,0.1611,-100.0,0.0,,checkpoint,20,runs\smoke\tiny\rq1\ppo_options\seed0

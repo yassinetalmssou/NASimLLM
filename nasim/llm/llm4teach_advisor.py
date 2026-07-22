@@ -1,3 +1,5 @@
+"""LLM4Teach advisor: scores high-level options from a network-state summary via an LLM, with caching and history."""
+
 import json
 import logging
 import re
@@ -274,7 +276,6 @@ class LLM4TeachAdvisor:
         self.cache.clear()
         self.cache_hits = 0
         self.cache_misses = 0
-        pass
 
 
 def score_options_from_advisor(advisor: LLM4TeachAdvisor,

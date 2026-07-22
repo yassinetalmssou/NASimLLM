@@ -25,7 +25,7 @@ logging.basicConfig(
     format="[%(levelname)s] %(name)s: %(message)s",
 )
 
-# ── Known labels ──────────────────────────────────────────────────────────────
+# Known labels
 _ABLATIONS   = {"full", "no_history", "no_avoidlist", "verbose_prompt", "llm_cached"}
 _CONDITIONS  = {"llm_full", "ppo_options", "random", "bruteforce"} | _ABLATIONS
 
@@ -37,7 +37,7 @@ _OUTPUT_FIELDS = [
 ]
 
 
-# ── Inference helpers ─────────────────────────────────────────────────────────
+# Inference helpers
 
 def _infer_rq(run_dir: Path, root: Path) -> str:
     try:
@@ -59,8 +59,8 @@ def _infer_model(run_dir: Path, root: Path) -> str:
     """Model name = first path component under root.
 
     Robust to both invocations:
-      * --root runs           → parts = (model, rqN, scenario, condition, seedN)
-      * --root runs/<model>   → parts = (rqN, scenario, condition, seedN)
+      * --root runs           -> parts = (model, rqN, scenario, condition, seedN)
+      * --root runs/<model>   -> parts = (rqN, scenario, condition, seedN)
     In the second case parts[0] is an RQ label, so the model is the root dir itself.
     """
     try:
@@ -75,17 +75,14 @@ def _infer_model(run_dir: Path, root: Path) -> str:
 
 
 def _infer_condition(run_dir: Path, merged: dict) -> str:
-    """Prefer config 'condition' → known token in path → use_llm fallback."""
-    # 1. Explicit field written by the trainer (Task 0 fix)
+    """Prefer config 'condition' -> known token in path -> use_llm fallback."""
     if merged.get("condition") not in (None, "unknown", ""):
         return merged["condition"]
 
-    # 2. Scan path components for a known condition token
     for part in run_dir.parts:
         if part in _CONDITIONS:
             return part
 
-    # 3. Fall back to use_llm
     return "llm_full" if merged.get("use_llm", False) else "ppo_options"
 
 
@@ -101,7 +98,7 @@ def _infer_seed(run_dir: Path, config: dict) -> str:
     return ""
 
 
-# ── Tree walker ───────────────────────────────────────────────────────────────
+# Tree walker
 
 def process_tree(root: Path, summary_name: str = "eval_summary.json") -> list[dict]:
     rows: list[dict] = []
@@ -156,14 +153,14 @@ def process_tree(root: Path, summary_name: str = "eval_summary.json") -> list[di
     logger.info(f"Conditions seen: {sorted(conditions_seen)}")
     for bad in rq3_bad:
         logger.warning(
-            "RQ3 run resolved to 'llm_full' — ablation label missing from config.json "
+            "RQ3 run resolved to 'llm_full' - ablation label missing from config.json "
             f"and not found in path. Add --condition flag to training command. Run: {bad}"
         )
 
     return rows
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# CLI entry point
 
 def main():
     parser = argparse.ArgumentParser(
@@ -188,7 +185,7 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    logger.info(f"Wrote {len(rows)} rows → {output}")
+    logger.info(f"Wrote {len(rows)} rows -> {output}")
 
 
 if __name__ == "__main__":

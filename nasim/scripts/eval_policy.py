@@ -10,12 +10,12 @@ Usage (full tree):
   python -m nasim.scripts.eval_policy --root runs/ --episodes 200
 
 Output written INTO each run directory:
-  eval.csv                   — per-episode rows
-  eval_summary.json          — scenario/condition/success_rate/CI/etc.
+  eval.csv                   - per-episode rows
+  eval_summary.json          - scenario/condition/success_rate/CI/etc.
 
 For random baseline:
   python -m nasim.scripts.eval_policy --root runs/ --policy random
-  → writes eval_random.csv + eval_summary_random.json
+  -> writes eval_random.csv + eval_summary_random.json
 """
 
 from __future__ import annotations
@@ -41,8 +41,6 @@ logging.basicConfig(
 )
 
 
-# ── Statistics helpers ────────────────────────────────────────────────────────
-
 def _wilson_ci(successes: int, n: int, z: float = 1.96):
     """Wilson score interval for a proportion (handles n=0 gracefully)."""
     if n == 0:
@@ -53,8 +51,6 @@ def _wilson_ci(successes: int, n: int, z: float = 1.96):
     spread = z * math.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2)) / denom
     return max(0.0, centre - spread), min(1.0, centre + spread)
 
-
-# ── Core evaluation routine ───────────────────────────────────────────────────
 
 def eval_run_dir(
     run_dir: Path,
@@ -91,9 +87,7 @@ def eval_run_dir(
         csv_out  = run_dir / "eval.csv"
         json_out = run_dir / summary_name
 
-    # ── Build environment ────────────────────────────────────────────────────
-    # Use a seed far from training seeds so eval episodes are independent.
-    # Each episode gets its own env instance with seed eval_seed+10000+ep.
+    # Build environment (eval seeds kept far from training seeds)
     template_env = nasim.make_benchmark(
         scenario,
         seed=eval_seed,
@@ -107,7 +101,7 @@ def eval_run_dir(
     num_actions = len(action_list)
     template_env.close() if hasattr(template_env, "close") else None
 
-    # ── Build action-selection function ─────────────────────────────────────
+    # Build action-selection function
     if policy == "checkpoint":
         ckpt_path = run_dir / "ckpts" / "ckpt_final.pt"
         if not ckpt_path.exists():
@@ -119,7 +113,7 @@ def eval_run_dir(
             hidden_dim=hidden_dim,
             num_options=5,
             device=device,
-            learning_rate=3e-4,  # value unused at eval time
+            learning_rate=3e-4,
             gamma=0.99,
             gae_lambda=0.95,
         )
@@ -139,19 +133,18 @@ def eval_run_dir(
             candidates = list(range(num_actions))
             return agent.select_action_from_option(obs, opt, candidates)
 
-    else:  # random policy — lower-bound baseline, no checkpoint needed
+    else:
         _rng = np.random.default_rng(eval_seed)
 
         def choose_action(obs: np.ndarray) -> int:  # noqa: F811
             return int(_rng.integers(num_actions))
 
-    # ── Evaluation loop ──────────────────────────────────────────────────────
+    # Evaluation loop
     records: list[dict] = []
     successes = 0
     steps_to_success: list[int] = []
 
     for ep in range(num_episodes):
-        # Independent seed per episode, offset far from training RNG stream
         ep_seed = eval_seed + 10_000 + ep
         env = nasim.make_benchmark(
             scenario,
@@ -186,7 +179,7 @@ def eval_run_dir(
             "steps_to_success": step if success else "",
         })
 
-    # ── Write per-episode CSV ────────────────────────────────────────────────
+    # Write per-episode CSV
     with open(csv_out, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh,
@@ -195,7 +188,7 @@ def eval_run_dir(
         writer.writeheader()
         writer.writerows(records)
 
-    # ── Compute summary ──────────────────────────────────────────────────────
+    # Compute summary
     returns = [r["native_return"] for r in records]
     ci_lo, ci_hi = _wilson_ci(successes, num_episodes)
     median_s2s = float(np.median(steps_to_success)) if steps_to_success else None
@@ -228,15 +221,11 @@ def eval_run_dir(
     return summary
 
 
-# ── Tree discovery ────────────────────────────────────────────────────────────
-
 def find_run_dirs(root: Path):
     """Yield every directory under *root* that contains config.json."""
     for p in sorted(root.rglob("config.json")):
         yield p.parent
 
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -249,7 +238,7 @@ def main():
     )
     group.add_argument(
         "--root", type=str,
-        help="Root tree — evaluate every directory that contains config.json",
+        help="Root tree - evaluate every directory that contains config.json",
     )
     parser.add_argument("--episodes", type=int, default=200,
                         help="Eval episodes per run (default: 200)")
@@ -275,7 +264,7 @@ def main():
     if not dirs:
         logger.error("No run directories found.")
         return
-    logger.info(f"Evaluating {len(dirs)} run director{'y' if len(dirs)==1 else 'ies'} …")
+    logger.info(f"Evaluating {len(dirs)} run director{'y' if len(dirs)==1 else 'ies'}")
 
     ok = failed = 0
     for d in dirs:
@@ -295,7 +284,7 @@ def main():
             logger.error(f"Failed [{d}]: {exc}")
             failed += 1
 
-    logger.info(f"Done — {ok} succeeded, {failed} failed.")
+    logger.info(f"Done: {ok} succeeded, {failed} failed.")
 
 
 if __name__ == "__main__":
