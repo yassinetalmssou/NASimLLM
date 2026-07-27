@@ -17,6 +17,7 @@ from typing import Optional, Dict, List, Tuple, TextIO
 
 import nasim
 from nasim.agents.llm4teach_agent import LLM4TeachAgent, action_to_option_id
+from nasim.agents.belief import BeliefTracker
 from nasim.llm.llm4teach_advisor import LLM4TeachAdvisor
 from nasim.envs.observation import Observation
 from prettytable import PrettyTable
@@ -78,6 +79,7 @@ class LLM4TeachTrainer:
                  use_local_llama: bool = True,
                  llama_use_4bit: bool = True,
                  fully_obs: bool = True,
+                 belief_accum: bool = False,
                  deterministic_torch: bool = False,
                  lambda_mode: str = "fixed",
                  kl_target: float = 0.01,
@@ -90,12 +92,15 @@ class LLM4TeachTrainer:
                  use_avoidlist: bool = True,
                  use_avoidlist_mask: bool = False,
                  use_compact_prompt: bool = True,
+                 history_len: int = 8,
                  llm_call_frequency: str = "every_step",
                  condition: str = ""):
         
         self.scenario_name = scenario
         self.seed = int(seed)
         self.fully_obs = fully_obs
+        self.belief_accum = belief_accum
+        self._belief_tracker = BeliefTracker()
         self.num_episodes = num_episodes
         self.episode_length = episode_length
         self.lambda_start = lambda_start
@@ -125,6 +130,7 @@ class LLM4TeachTrainer:
         self.use_avoidlist = use_avoidlist
         self.use_avoidlist_mask = use_avoidlist_mask
         self.use_compact_prompt = use_compact_prompt
+        self.history_len = history_len
         self.llm_call_frequency = llm_call_frequency
         if condition:
             self.condition = condition
@@ -210,6 +216,7 @@ class LLM4TeachTrainer:
                     use_history=self.use_history_mechanism,
                     use_avoidlist=self.use_avoidlist,
                     use_compact_prompt=self.use_compact_prompt,
+                    history_len=self.history_len,
                 )
         
         if self.save_dir:
@@ -507,7 +514,9 @@ class LLM4TeachTrainer:
     ]:
         """Run one episode, apply reward shaping, and return the rollout tensors."""
         obs, _ = self.env.reset()
-        
+        if self.belief_accum:
+            obs = self._belief_tracker.reset(obs)
+
         states = []
         option_ids = []
         actions = []
@@ -572,6 +581,8 @@ class LLM4TeachTrainer:
             prev_action_desc = str(self.action_list[action_idx])
 
             next_obs, reward, done, truncated, info = self.env.step(action_idx)
+            if self.belief_accum:
+                next_obs = self._belief_tracker.update(next_obs)
             self.agent.record_action_result(action_idx, success=(reward != -1))
 
             episode_end = bool(done or truncated)
@@ -983,6 +994,7 @@ class LLM4TeachTrainer:
                 "num_episodes": self.num_episodes,
                 "episode_length": self.episode_length,
                 "fully_obs": self.fully_obs,
+                "belief_accum": self.belief_accum,
                 "use_llm": self.use_llm,
                 "prompt_variant": self.prompt_variant,
                 "lambda_start": self.lambda_start,
@@ -998,6 +1010,7 @@ class LLM4TeachTrainer:
                 "use_avoidlist": self.use_avoidlist,
                 "use_avoidlist_mask": self.use_avoidlist_mask,
                 "use_compact_prompt": self.use_compact_prompt,
+                "history_len": self.history_len,
                 "llm_call_frequency": self.llm_call_frequency,
                 "learning_rate": self.agent.optimizer.param_groups[0]['lr'],
                 "batch_size": self.batch_size,
@@ -1043,6 +1056,8 @@ class LLM4TeachTrainer:
         
         for ep in range(num_episodes):
             obs, _ = self.env.reset()
+            if self.belief_accum:
+                obs = self._belief_tracker.reset(obs)
             done = False
             ep_reward = 0
             step = 0
@@ -1053,6 +1068,8 @@ class LLM4TeachTrainer:
                 action_idx = self.agent.select_action_from_option(obs, option_id, candidates)
                 
                 obs, reward, done, truncated, info = self.env.step(action_idx)
+                if self.belief_accum:
+                    obs = self._belief_tracker.update(obs)
                 ep_reward += reward
                 step += 1
             
@@ -1110,6 +1127,9 @@ def main():
                         help="Fully observable mode [default]")
     parser.add_argument("--partial-obs", action="store_false", dest="fully_obs",
                         help="Use partial observability")
+    parser.add_argument("--belief-accum", action="store_true",
+                        help="Aggregate partial observations into a running belief state "
+                             "(recommended with --partial-obs; no effect under full observability)")
     parser.add_argument(
         "--lambda-mode", type=str, default="fixed",
         choices=["fixed", "target-kl", "competence", "adaptive"],
@@ -1137,6 +1157,8 @@ def main():
     parser.add_argument("--avoidlist-mask", action="store_true", dest="use_avoidlist_mask",
                         help="Enable the WORKING avoid-list: at action-selection, mask concrete "
                              "actions that failed >=2x this episode (decoupled from the LLM cache)")
+    parser.add_argument("--history-len", type=int, default=8,
+                        help="Length of the recent-action log shown to the teacher (default: 8)")
     parser.add_argument("--llm-call-freq", type=str, default="every_step",
                         choices=["every_step", "cached", "reduced"],
                         help="LLM call frequency (default: every_step)")
@@ -1176,6 +1198,7 @@ def main():
         use_local_llama=True,
         llama_use_4bit=args.llama_4bit,
         fully_obs=args.fully_obs,
+        belief_accum=args.belief_accum,
         deterministic_torch=False,
         lambda_mode=args.lambda_mode,
         kl_target=args.kl_target,
@@ -1188,6 +1211,7 @@ def main():
         use_avoidlist=args.use_avoidlist,
         use_avoidlist_mask=args.use_avoidlist_mask,
         use_compact_prompt=args.use_compact_prompt,
+        history_len=args.history_len,
         llm_call_frequency=args.llm_call_freq,
         condition=args.condition,
     )

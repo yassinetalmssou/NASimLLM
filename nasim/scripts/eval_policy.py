@@ -33,6 +33,7 @@ import torch
 
 import nasim
 from nasim.agents.llm4teach_agent import LLM4TeachAgent
+from nasim.agents.belief import BeliefTracker
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -77,6 +78,7 @@ def eval_run_dir(
     episode_length = episode_length_override or config.get("episode_length", 500)
     condition     = config.get("condition", "unknown")
     use_llm       = config.get("use_llm", False)
+    belief_accum  = config.get("belief_accum", False)
     train_seed    = config.get("seed", 0)
 
     # Decide output file names based on policy
@@ -129,7 +131,7 @@ def eval_run_dir(
         agent.student.eval()
 
         def choose_action(obs: np.ndarray) -> int:
-            opt = agent.choose_option(obs, training=False)
+            opt = agent.choose_option(obs, training=not greedy)
             candidates = list(range(num_actions))
             return agent.select_action_from_option(obs, opt, candidates)
 
@@ -140,6 +142,7 @@ def eval_run_dir(
             return int(_rng.integers(num_actions))
 
     # Evaluation loop
+    belief_tracker = BeliefTracker()
     records: list[dict] = []
     successes = 0
     steps_to_success: list[int] = []
@@ -154,6 +157,8 @@ def eval_run_dir(
             flat_obs=True,
         )
         obs, _ = env.reset()
+        if belief_accum:
+            obs = belief_tracker.reset(obs)
         done       = False
         native_return = 0.0
         step       = 0
@@ -161,6 +166,8 @@ def eval_run_dir(
         while not done and step < episode_length:
             action_idx = choose_action(obs)
             obs, reward, done, truncated, _ = env.step(action_idx)
+            if belief_accum:
+                obs = belief_tracker.update(obs)
             native_return += float(reward)
             step += 1
             if truncated:
@@ -208,6 +215,7 @@ def eval_run_dir(
         "eval_seed":              eval_seed,
         "greedy":                 greedy,
         "policy":                 policy,
+        "belief_accum":           belief_accum,
     }
 
     with open(json_out, "w", encoding="utf-8") as fh:

@@ -43,6 +43,8 @@ def build_command(
     learning_rate: float,
     batch_size: int,
     num_epochs: int,
+    fully_obs: bool = True,
+    belief_accum: bool = False,
 ) -> List[str]:
     """Build train_llm4teach command for specific condition x scenario."""
 
@@ -77,6 +79,11 @@ def build_command(
     else:
         cmd.append("--no-llm")
 
+    if not fully_obs:
+        cmd.append("--partial-obs")
+    if belief_accum:
+        cmd.append("--belief-accum")
+
     return cmd
 
 
@@ -99,6 +106,8 @@ def run_experiment(
     learning_rate: float,
     batch_size: int,
     num_epochs: int,
+    fully_obs: bool = True,
+    belief_accum: bool = False,
     dry_run: bool = False,
 ) -> int:
     """Run single experiment (one condition + one scenario + one seed)."""
@@ -108,6 +117,7 @@ def run_experiment(
         episode_length, teacher_temp, lambda_start, lambda_decay,
         lambda_mode, lambda_min, llm_mix_weight, hidden_dim, learning_rate,
         batch_size, num_epochs,
+        fully_obs=fully_obs, belief_accum=belief_accum,
     )
 
     cmd_str = " ".join(cmd)
@@ -203,6 +213,14 @@ def main():
         "--num-epochs", type=int, default=4,
         help="PPO update epochs (default: 4)"
     )
+    parser.add_argument(
+        "--partial-obs", action="store_false", dest="fully_obs",
+        help="Partial observability (default: fully observable)"
+    )
+    parser.add_argument(
+        "--belief-accum", action="store_true",
+        help="Aggregate partial observations into a running belief state"
+    )
 
     parser.add_argument(
         "--parallel", action="store_true",
@@ -245,6 +263,8 @@ def main():
             learning_rate=args.learning_rate,
             batch_size=args.batch_size,
             num_epochs=args.num_epochs,
+            fully_obs=args.fully_obs,
+            belief_accum=args.belief_accum,
         )
 
     if args.parallel:

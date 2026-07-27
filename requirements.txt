@@ -25,5 +25,5 @@ tensorboard>=2.2
 
 # ----- Analysis (notebooks: rq1/rq2/rq3) -----
 pandas
-scipy
+scipy<1.13          # <1.13 is built against numpy 1.x; scipy>=1.13 requires numpy>=2 (conflicts with numpy<2.0.0)
 jupyter

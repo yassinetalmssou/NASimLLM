@@ -12,6 +12,8 @@ A_TEACHERS=(qwen-4B llama-1B llama-3B llama-8B qwen-8B)
 B_TEACHERS=(qwen-4B llama-1B qwen-8B)
 SEEDS="0 1 2"
 EPISODES=1000
+# Observability: partial observability + belief-state aggregation (POMDP).
+OBS="--partial-obs --belief-accum"
 
 GATE=1; DRYRUN=0
 for arg in "$@"; do
@@ -37,7 +39,9 @@ elif ! python -c "import nasim" >/dev/null 2>&1; then
 fi
 mkdir -p logs
 
-RUNS_ROOT="${VSC_SCRATCH:-runs_root}/runs"
+# Output tree is overridable so a POMDP run can live beside the full-obs runs:
+#   RUNS_SUBDIR=runs_pomdp JOBTAG=p_ bash hpc/submit_rq3_extended.sh
+RUNS_ROOT="${VSC_SCRATCH:-runs_root}/${RUNS_SUBDIR:-runs}"
 WEIGHTS_ROOT="${VSC_SCRATCH:-runs_root}/llm_weights"
 resolve_model() {
     case "$1" in
@@ -67,8 +71,8 @@ submit_cmdfile() {   # $1=jobname $2=command_file
     if [ $DRYRUN -eq 1 ]; then
         printf "  [dry-run] %-22s %3d tasks   (%s)\n" "$name" "$n" "$f"; return
     fi
-    sbatch $DEP --job-name="$name" --array="1-$n" \
-        --output="logs/${name}_%A_%a.out" --error="logs/${name}_%A_%a.err" \
+    sbatch $DEP --export="ALL,SYNC_TO_DATA=${SYNC_TO_DATA:-1}" --job-name="${JOBTAG}$name" --array="1-$n" \
+        --output="logs/${JOBTAG}${name}_%A_%a.out" --error="logs/${JOBTAG}${name}_%A_%a.err" \
         hpc/jobs/rq3b.sh "$f"
     printf "  submitted %-22s %3d tasks\n" "$name" "$n"
 }
@@ -78,7 +82,7 @@ for T in "${A_TEACHERS[@]}"; do
     OUT="$RUNS_ROOT/$T"; MP=$(resolve_model "$T"); mkdir -p "$OUT/rq3"
     if [ "$T" = "qwen-4B" ]; then NAMES=(--names avoidlist_mask); else NAMES=(); fi
     python -m nasim.scripts.gen_rq3_extended --set A --out-dir "$OUT" --model "$MP" \
-        --episodes $EPISODES --seeds $SEEDS "${NAMES[@]}" > "$OUT/rq3/commands_A.txt"
+        --episodes $EPISODES --seeds $SEEDS $OBS "${NAMES[@]}" > "$OUT/rq3/commands_A.txt"
     submit_cmdfile "rq3A_${T}" "$OUT/rq3/commands_A.txt"
 done
 
@@ -87,7 +91,7 @@ echo "Set B - hyperparameter sensitivity (lambda-schedule + guidance)"
 for T in "${B_TEACHERS[@]}"; do
     OUT="$RUNS_ROOT/$T"; MP=$(resolve_model "$T"); mkdir -p "$OUT/sens"
     python -m nasim.scripts.gen_rq3_extended --set B --out-dir "$OUT" --model "$MP" \
-        --episodes $EPISODES --seeds $SEEDS > "$OUT/sens/commands_B.txt"
+        --episodes $EPISODES --seeds $SEEDS $OBS > "$OUT/sens/commands_B.txt"
     submit_cmdfile "sensB_${T}" "$OUT/sens/commands_B.txt"
 done
 

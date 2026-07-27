@@ -15,9 +15,9 @@ RQ2_TEACHERS=(qwen-4B llama-3B llama-8B)                    # panel, all scenari
 RQ3_TEACHER="qwen-4B"                                       # primary, small only
 SEEDS="0 1 2"
 EPISODES=1000
-# Shared hyperparameters.
+# Shared hyperparameters + observability (POMDP: partial obs + belief-state aggregation).
 HP="--episode-length 500 --lambda-decay 0.97 --lambda-mode competence --lambda-min 0.05 \
---batch-size 64 --num-epochs 4 --llm-mix-weight 0.5"
+--batch-size 64 --num-epochs 4 --llm-mix-weight 0.5 --partial-obs --belief-accum"
 DEVICE="cuda"
 
 # Flags.
@@ -50,7 +50,9 @@ elif ! python -c "import nasim" >/dev/null 2>&1; then
 fi
 mkdir -p logs
 
-RUNS_ROOT="${VSC_SCRATCH:-runs_root}/runs"
+# Output tree is overridable so a POMDP run can live beside the full-obs runs:
+#   RUNS_SUBDIR=runs_pomdp JOBTAG=p_ bash hpc/submit_experiment.sh
+RUNS_ROOT="${VSC_SCRATCH:-runs_root}/${RUNS_SUBDIR:-runs}"
 WEIGHTS_ROOT="${VSC_SCRATCH:-runs_root}/llm_weights"
 
 resolve_model() {
@@ -90,8 +92,8 @@ submit_array() {
         printf "  [dry-run] %-26s %3d tasks   (%s)\n" "$name" "$n" "$cmdfile"
         return
     fi
-    sbatch $DEP --job-name="$name" --array="1-$n" \
-        --output="logs/${name}_%A_%a.out" --error="logs/${name}_%A_%a.err" \
+    sbatch $DEP --export="ALL,SYNC_TO_DATA=${SYNC_TO_DATA:-1}" --job-name="${JOBTAG}$name" --array="1-$n" \
+        --output="logs/${JOBTAG}${name}_%A_%a.out" --error="logs/${JOBTAG}${name}_%A_%a.err" \
         "$script" "$cmdfile"
     printf "  submitted %-26s %3d tasks\n" "$name" "$n"
 }

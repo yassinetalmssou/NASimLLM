@@ -50,10 +50,12 @@ EXIT_CODE=$?
 # Sync results from SCRATCH back to DATA.
 RESULTS_SRC="$(dirname "$COMMAND_FILE")"
 RESULTS_DST="${RESULTS_SRC/$VSC_SCRATCH/$VSC_DATA}"
-if [ -d "$RESULTS_SRC" ]; then
+if [ "${SYNC_TO_DATA:-1}" = "1" ] && [ -d "$RESULTS_SRC" ]; then
     mkdir -p "$RESULTS_DST"
     rsync -a --info=progress2 "$RESULTS_SRC/" "$RESULTS_DST/"
     echo "Results synced to $RESULTS_DST (also kept on SCRATCH)"
+elif [ -d "$RESULTS_SRC" ]; then
+    echo "SYNC_TO_DATA=0: results kept on SCRATCH only ($RESULTS_SRC)"
 fi
 
 if [ $EXIT_CODE -ne 0 ]; then

@@ -32,7 +32,8 @@ class LLM4TeachAdvisor:
                  prompt_variant: str = "structured",
                  use_history: bool = True,
                  use_avoidlist: bool = True,
-                 use_compact_prompt: bool = True):
+                 use_compact_prompt: bool = True,
+                 history_len: int = 8):
         self.llm_client = llm_client
         self.use_cache = use_cache
         self.force_call = force_call
@@ -63,7 +64,8 @@ class LLM4TeachAdvisor:
             'avoidlist_used': 0,
         }
         
-        self._action_log: deque = deque(maxlen=8)
+        self.history_len = int(history_len)
+        self._action_log: deque = deque(maxlen=self.history_len)
         self._failure_counts: dict = {}
         
         self._cache_key_prefix = self._generate_cache_key_prefix()

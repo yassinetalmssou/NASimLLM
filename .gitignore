@@ -59,3 +59,14 @@ figures/
 .vscode/
 
 .venv/
+
+# Experiment result trees synced from HPC (train.csv, config.json, checkpoints)
+runs_pomdp/
+hpc/results/
+hpc/partial_results/
+
+# Thesis draft (LaTeX sources + built PDFs; kept out of the code repo)
+Thesis_Draft/
+
+# Internal working notes (not part of the codebase)
+evaluation_gated_feedback_brief.md

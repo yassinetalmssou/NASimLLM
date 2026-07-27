@@ -10,6 +10,9 @@ command file that hpc/jobs/rq3b.sh runs as a SLURM array):
   Set B - hyperparameter sensitivity (runs/<teacher>/sens/small/<config>/):
       one knob varied from the backbone baseline, rest held fixed.
 
+  Set C - recent-action history-length sweep (runs/<teacher>/sens/small/hist_<N>/):
+      the teacher's recent-action log length varied over {4, 8, 16, 32, 64}.
+
 Baseline matches hpc/submit_experiment.sh so results are comparable.
 
 Usage:
@@ -23,7 +26,8 @@ from pathlib import Path
 # Backbone baseline (identical to submit_experiment.sh).
 BASE = dict(episode_length=500, lambda_mode="competence", lambda_start=1.0,
             lambda_decay=0.97, lambda_min=0.05, kl_target=0.01,
-            llm_mix_weight=0.5, teacher_temp=2.0, batch_size=64, num_epochs=4)
+            llm_mix_weight=0.5, teacher_temp=2.0, batch_size=64, num_epochs=4,
+            history_len=8)
 
 # Set A: component ablations -> extra trainer flags (all are llm_full).
 SET_A = {
@@ -35,16 +39,27 @@ SET_A = {
 }
 
 # Set B: one knob overridden from BASE (name -> (knob, value)).
+# kl_target only affects target-kl/adaptive modes, so the schedule variants set
+# lambda_mode directly; a bare kl_target sweep under the competence baseline is a no-op.
 SET_B = {
-    "lam_fixed":  ("lambda_mode", "fixed"),
-    "lstart_0.5": ("lambda_start", 0.5),
-    "lstart_2.0": ("lambda_start", 2.0),
-    "kl_0.005":   ("kl_target", 0.005),
-    "kl_0.05":    ("kl_target", 0.05),
-    "mix_0.3":    ("llm_mix_weight", 0.3),
-    "mix_0.8":    ("llm_mix_weight", 0.8),
-    "temp_1.0":   ("teacher_temp", 1.0),
-    "temp_4.0":   ("teacher_temp", 4.0),
+    "lam_fixed":      ("lambda_mode", "fixed"),
+    "sched_targetkl": ("lambda_mode", "target-kl"),
+    "sched_adaptive": ("lambda_mode", "adaptive"),
+    "lstart_0.5":     ("lambda_start", 0.5),
+    "lstart_2.0":     ("lambda_start", 2.0),
+    "mix_0.3":        ("llm_mix_weight", 0.3),
+    "mix_0.8":        ("llm_mix_weight", 0.8),
+    "temp_1.0":       ("teacher_temp", 1.0),
+    "temp_4.0":       ("teacher_temp", 4.0),
+}
+
+# Set C: recent-action history-length sweep (RQ3 component sensitivity).
+SET_C = {
+    "hist_4":  ("history_len", 4),
+    "hist_8":  ("history_len", 8),
+    "hist_16": ("history_len", 16),
+    "hist_32": ("history_len", 32),
+    "hist_64": ("history_len", 64),
 }
 
 
@@ -60,23 +75,28 @@ def _base_flags(knobs):
         "--teacher-temp", str(knobs["teacher_temp"]),
         "--batch-size", str(knobs["batch_size"]),
         "--num-epochs", str(knobs["num_epochs"]),
+        "--history-len", str(knobs["history_len"]),
     ]
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--set", required=True, choices=["A", "B"])
+    p.add_argument("--set", required=True, choices=["A", "B", "C"])
     p.add_argument("--out-dir", required=True, help="$VSC_SCRATCH/runs/<teacher>")
     p.add_argument("--model", required=True, help="absolute path to the teacher weights")
     p.add_argument("--episodes", type=int, default=1000)
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     p.add_argument("--device", default="cuda")
     p.add_argument("--scenario", default="small")
+    p.add_argument("--partial-obs", action="store_false", dest="fully_obs",
+                   help="Partial observability (default: fully observable)")
+    p.add_argument("--belief-accum", action="store_true",
+                   help="Aggregate partial observations into a running belief state")
     p.add_argument("--names", nargs="*", default=None,
                    help="subset of condition/config names (default: all in the set)")
     a = p.parse_args()
 
-    table = SET_A if a.set == "A" else SET_B
+    table = {"A": SET_A, "B": SET_B, "C": SET_C}[a.set]
     sub = "rq3" if a.set == "A" else "sens"
     names = a.names if a.names else list(table.keys())
 
@@ -101,6 +121,8 @@ def main():
                 *_base_flags(knobs),
                 "--save-dir", str(save_dir), "--condition", name, "--no-step-logs",
                 *extra,
+                *(["--partial-obs"] if not a.fully_obs else []),
+                *(["--belief-accum"] if a.belief_accum else []),
             ]
             print(" ".join(cmd))
 

@@ -61,6 +61,8 @@ def build_command(
     learning_rate: float = 3e-4,
     batch_size: int = 64,
     num_epochs: int = 4,
+    fully_obs: bool = True,
+    belief_accum: bool = False,
 ) -> List[str]:
     """Build train_llm4teach command for specific ablation."""
 
@@ -94,6 +96,11 @@ def build_command(
     cmd.extend(ablation["flags"])
     cmd.extend(["--condition", ablation_name])
 
+    if not fully_obs:
+        cmd.append("--partial-obs")
+    if belief_accum:
+        cmd.append("--belief-accum")
+
     return cmd
 
 
@@ -116,6 +123,8 @@ def run_experiment(
     learning_rate: float = 3e-4,
     batch_size: int = 64,
     num_epochs: int = 4,
+    fully_obs: bool = True,
+    belief_accum: bool = False,
     dry_run: bool = False,
 ) -> bool:
     """Run single ablation experiment."""
@@ -127,6 +136,7 @@ def run_experiment(
         lambda_mode=lambda_mode, lambda_min=lambda_min,
         llm_mix_weight=llm_mix_weight, hidden_dim=hidden_dim,
         learning_rate=learning_rate, batch_size=batch_size, num_epochs=num_epochs,
+        fully_obs=fully_obs, belief_accum=belief_accum,
     )
 
     if dry_run:
@@ -210,6 +220,10 @@ def main():
                         help="PPO batch size (default: 64)")
     parser.add_argument("--num-epochs", type=int, default=4,
                         help="PPO update epochs (default: 4)")
+    parser.add_argument("--partial-obs", action="store_false", dest="fully_obs",
+                        help="Partial observability (default: fully observable)")
+    parser.add_argument("--belief-accum", action="store_true",
+                        help="Aggregate partial observations into a running belief state")
 
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing")
@@ -246,6 +260,8 @@ def main():
                         learning_rate=args.learning_rate,
                         batch_size=args.batch_size,
                         num_epochs=args.num_epochs,
+                        fully_obs=args.fully_obs,
+                        belief_accum=args.belief_accum,
                     )
                     f.write(" ".join(cmd) + "\n")
 
@@ -273,6 +289,8 @@ def main():
             learning_rate=args.learning_rate,
             batch_size=args.batch_size,
             num_epochs=args.num_epochs,
+            fully_obs=args.fully_obs,
+            belief_accum=args.belief_accum,
             dry_run=args.dry_run,
         )
         

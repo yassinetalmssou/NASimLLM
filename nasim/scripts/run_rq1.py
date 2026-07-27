@@ -31,12 +31,12 @@ _CSV_FIELDS = [
 ]
 
 
-def _make_summarizer(env):
+def _make_summarizer(env, fully_obs=True):
     """Lightweight proxy that provides summarize_state() without loading LLM."""
     from nasim.train_llm4teach import LLM4TeachTrainer
     s = LLM4TeachTrainer.__new__(LLM4TeachTrainer)
     s.env = env
-    s.fully_obs = True
+    s.fully_obs = fully_obs
     return s
 
 
@@ -56,11 +56,11 @@ def _host_metrics(summarizer, obs):
 
 
 def run_random_episodes(scenario: str, seed: int, num_episodes: int,
-                        episode_length: int, out_csv: Path):
+                        episode_length: int, out_csv: Path, fully_obs: bool = True):
     env = nasim.make_benchmark(
-        scenario, seed=seed, fully_obs=True, flat_actions=True, flat_obs=True
+        scenario, seed=seed, fully_obs=fully_obs, flat_actions=True, flat_obs=True
     )
-    summarizer = _make_summarizer(env)
+    summarizer = _make_summarizer(env, fully_obs)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     recent_rewards: deque = deque(maxlen=10)
 
@@ -114,11 +114,11 @@ def run_random_episodes(scenario: str, seed: int, num_episodes: int,
 
 
 def run_bruteforce_episodes(scenario: str, seed: int, num_episodes: int,
-                            episode_length: int, out_csv: Path):
+                            episode_length: int, out_csv: Path, fully_obs: bool = True):
     env = nasim.make_benchmark(
-        scenario, seed=seed, fully_obs=True, flat_actions=True, flat_obs=True
+        scenario, seed=seed, fully_obs=fully_obs, flat_actions=True, flat_obs=True
     )
-    summarizer  = _make_summarizer(env)
+    summarizer  = _make_summarizer(env, fully_obs)
     num_actions = len(env.action_space.actions)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     recent_rewards: deque = deque(maxlen=10)
@@ -197,7 +197,6 @@ def run_trainer_condition(condition: str, scenario: str, seed: int,
         llama_model=llama_model,
         use_local_llama=use_llm,
         llama_use_4bit=True,
-        fully_obs=True,
         csv_log=str(csv_path),
         condition=condition,
         **extra_kwargs,
@@ -237,6 +236,10 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-epochs", type=int, default=4)
+    parser.add_argument("--partial-obs", action="store_false", dest="fully_obs",
+                        help="Partial observability (default: fully observable)")
+    parser.add_argument("--belief-accum", action="store_true",
+                        help="Aggregate partial observations into a running belief state")
     parser.add_argument("--parallel", action="store_true",
                         help="Generate commands_{scenario}.txt for SLURM array jobs instead of running")
     args = parser.parse_args()
@@ -252,6 +255,8 @@ def main():
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         num_epochs=args.num_epochs,
+        fully_obs=args.fully_obs,
+        belief_accum=args.belief_accum,
     )
 
     if args.parallel:
@@ -278,6 +283,8 @@ def main():
                         "--learning-rate", str(args.learning_rate),
                         "--batch-size", str(args.batch_size),
                         "--num-epochs", str(args.num_epochs),
+                        *(["--partial-obs"] if not args.fully_obs else []),
+                        *(["--belief-accum"] if args.belief_accum else []),
                     ]
                     f.write(" ".join(cmd) + "\n")
         total = len(args.seeds) * len(args.conditions)
@@ -294,6 +301,7 @@ def main():
                     num_episodes=args.episodes,
                     episode_length=args.episode_length,
                     out_csv=out_dir / args.scenario / "random" / f"seed{seed}" / "train.csv",
+                    fully_obs=args.fully_obs,
                 )
             elif condition == "bruteforce":
                 run_bruteforce_episodes(
@@ -301,6 +309,7 @@ def main():
                     num_episodes=args.episodes,
                     episode_length=args.episode_length,
                     out_csv=out_dir / args.scenario / "bruteforce" / f"seed{seed}" / "train.csv",
+                    fully_obs=args.fully_obs,
                 )
             else:
                 run_trainer_condition(
