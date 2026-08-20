@@ -1,7 +1,7 @@
 #!/bin/bash
-# Extended RQ3 in one shot: Set A component ablations (runs/<teacher>/rq3/small/) and
-# Set B hyperparameter sensitivity (runs/<teacher>/sens/small/). ~144 array tasks, small/1000-ep,
-# gated by hpc/jobs/gate.sh (afterok).
+# Extended RQ3 in one shot: Set A component ablations (runs/<teacher>/rq3/small/),
+# Set B hyperparameter sensitivity, and Set C action-history-length sweep (runs/<teacher>/sens/small/).
+# 6 seeds, 2000 episodes, gated by hpc/jobs/gate.sh (afterok).
 # Usage (on HPC, from $VSC_DATA/NASimLLM):
 #   bash hpc/submit_rq3_extended.sh              # gate + submit everything
 #   bash hpc/submit_rq3_extended.sh --dry-run    # generate command files, show counts
@@ -10,9 +10,12 @@ set -e
 
 A_TEACHERS=(qwen-4B llama-1B llama-3B llama-8B qwen-8B)
 B_TEACHERS=(qwen-4B llama-1B qwen-8B)
-SEEDS="0 1 2"
-EPISODES=1000
+C_TEACHERS=(qwen-4B)
+SEEDS="0 1 2 3 4 5"
+EPISODES=2000
 # Observability: partial observability + belief-state aggregation (POMDP).
+# competence_window defaults to 50 in the trainer (raised from 10 for POMDP stability;
+# recorded in every run's config.json).
 OBS="--partial-obs --belief-accum"
 
 GATE=1; DRYRUN=0
@@ -93,6 +96,15 @@ for T in "${B_TEACHERS[@]}"; do
     python -m nasim.scripts.gen_rq3_extended --set B --out-dir "$OUT" --model "$MP" \
         --episodes $EPISODES --seeds $SEEDS $OBS > "$OUT/sens/commands_B.txt"
     submit_cmdfile "sensB_${T}" "$OUT/sens/commands_B.txt"
+done
+
+echo ""
+echo "Set C - action-history length sweep (hist_4/8/16/32/64)"
+for T in "${C_TEACHERS[@]}"; do
+    OUT="$RUNS_ROOT/$T"; MP=$(resolve_model "$T"); mkdir -p "$OUT/sens"
+    python -m nasim.scripts.gen_rq3_extended --set C --out-dir "$OUT" --model "$MP" \
+        --episodes $EPISODES --seeds $SEEDS $OBS > "$OUT/sens/commands_hist.txt"
+    submit_cmdfile "sensC_${T}" "$OUT/sens/commands_hist.txt"
 done
 
 echo ""

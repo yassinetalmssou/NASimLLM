@@ -13,9 +13,11 @@ PRIMARY="qwen-4B"
 RQ1_TEACHERS=(qwen-4B llama-1B llama-3B llama-8B qwen-8B)   # all 5, small only
 RQ2_TEACHERS=(qwen-4B llama-3B llama-8B)                    # panel, all scenarios
 RQ3_TEACHER="qwen-4B"                                       # primary, small only
-SEEDS="0 1 2"
-EPISODES=1000
+SEEDS="0 1 2 3 4 5"
+EPISODES=2000
 # Shared hyperparameters + observability (POMDP: partial obs + belief-state aggregation).
+# competence_window defaults to 50 in the trainer (raised from 10 for POMDP stability);
+# it is recorded in every run's config.json.
 HP="--episode-length 500 --lambda-decay 0.97 --lambda-mode competence --lambda-min 0.05 \
 --batch-size 64 --num-epochs 4 --llm-mix-weight 0.5 --partial-obs --belief-accum"
 DEVICE="cuda"

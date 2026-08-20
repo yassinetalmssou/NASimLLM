@@ -62,8 +62,14 @@ def eval_run_dir(
     episode_length_override: Optional[int] = None,
     policy: str = "checkpoint",
     summary_name: str = "eval_summary.json",
+    out_dir: Optional[Path] = None,
+    csv_name: Optional[str] = None,
 ) -> dict:
-    """Evaluate one run directory.  Returns the summary dict."""
+    """Evaluate one run directory.  Returns the summary dict.
+
+    Inputs (config.json, checkpoint) are always read from *run_dir*. Outputs are
+    written to *out_dir* if given, otherwise back into *run_dir*.
+    """
     run_dir = Path(run_dir)
     config_path = run_dir / "config.json"
     if not config_path.exists():
@@ -81,13 +87,13 @@ def eval_run_dir(
     belief_accum  = config.get("belief_accum", False)
     train_seed    = config.get("seed", 0)
 
-    # Decide output file names based on policy
-    if policy == "random":
-        csv_out  = run_dir / "eval_random.csv"
-        json_out = run_dir / summary_name
-    else:
-        csv_out  = run_dir / "eval.csv"
-        json_out = run_dir / summary_name
+    # Decide output location and file names
+    dest = Path(out_dir) if out_dir else run_dir
+    dest.mkdir(parents=True, exist_ok=True)
+    if csv_name is None:
+        csv_name = "eval_random.csv" if policy == "random" else "eval.csv"
+    csv_out  = dest / csv_name
+    json_out = dest / summary_name
 
     # Build environment (eval seeds kept far from training seeds)
     template_env = nasim.make_benchmark(

@@ -35,6 +35,10 @@ ABLATIONS = {
         "desc": "Verbose prompts (not nomad-style)",
         "flags": ["--verbose-prompt"]
     },
+    "no_shaping": {
+        "desc": "Raw NASim reward (no enhanced reward shaping)",
+        "flags": ["--no-shaping"]
+    },
     "llm_cached": {
         "desc": "Cached LLM calls",
         "flags": ["--llm-call-freq", "cached"]

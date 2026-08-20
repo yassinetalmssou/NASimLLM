@@ -84,7 +84,7 @@ class LLM4TeachTrainer:
                  lambda_mode: str = "fixed",
                  kl_target: float = 0.01,
                  lambda_min: float = 0.005,
-                 competence_window: int = 10,
+                 competence_window: int = 50,  # raised from 10 for POMDP training stability
                  llm_mix_weight: float = 0.3,
                  teacher_temp: float = 2.0,
                  csv_log: Optional[str] = None,
@@ -92,6 +92,7 @@ class LLM4TeachTrainer:
                  use_avoidlist: bool = True,
                  use_avoidlist_mask: bool = False,
                  use_compact_prompt: bool = True,
+                 use_reward_shaping: bool = True,
                  history_len: int = 8,
                  llm_call_frequency: str = "every_step",
                  condition: str = ""):
@@ -130,6 +131,7 @@ class LLM4TeachTrainer:
         self.use_avoidlist = use_avoidlist
         self.use_avoidlist_mask = use_avoidlist_mask
         self.use_compact_prompt = use_compact_prompt
+        self.use_reward_shaping = use_reward_shaping
         self.history_len = history_len
         self.llm_call_frequency = llm_call_frequency
         if condition:
@@ -702,6 +704,8 @@ class LLM4TeachTrainer:
             states.append(obs.copy())
             option_ids.append(option_id)
             actions.append(action_idx)
+            if not self.use_reward_shaping:
+                shaped_reward = reward  # ablation: use the raw NASim reward, no shaping
             rewards.append(shaped_reward)
             dones.append(1.0 if episode_end else 0.0)
             teacher_probs_list.append(teacher_probs)
@@ -1010,6 +1014,7 @@ class LLM4TeachTrainer:
                 "use_avoidlist": self.use_avoidlist,
                 "use_avoidlist_mask": self.use_avoidlist_mask,
                 "use_compact_prompt": self.use_compact_prompt,
+                "use_reward_shaping": self.use_reward_shaping,
                 "history_len": self.history_len,
                 "llm_call_frequency": self.llm_call_frequency,
                 "learning_rate": self.agent.optimizer.param_groups[0]['lr'],
@@ -1139,8 +1144,9 @@ def main():
                         help="Target KL for target-kl/adaptive modes (default: 0.01)")
     parser.add_argument("--lambda-min", type=float, default=0.005,
                         help="Floor for adaptive lambda (default: 0.005)")
-    parser.add_argument("--competence-window", type=int, default=10,
-                        help="Rolling window for competence-based lambda (default: 10)")
+    parser.add_argument("--competence-window", type=int, default=50,
+                        help="Rolling window for competence-based lambda (default: 50; "
+                             "raised from 10 for POMDP training stability)")
     parser.add_argument("--llm-mix-weight", type=float, default=0.3,
                         help="Max fraction of LLM in option sampling (0=pure student, 1=pure LLM). Decays with lambda. Default: 0.3")
     parser.add_argument("--teacher-temp", type=float, default=2.0,
@@ -1154,6 +1160,8 @@ def main():
                         help="Disable avoidlist (don't track failed action pairs)")
     parser.add_argument("--verbose-prompt", action="store_false", dest="use_compact_prompt",
                         help="Use verbose prompts instead of compact nomad-style")
+    parser.add_argument("--no-shaping", action="store_false", dest="use_reward_shaping",
+                        help="Disable enhanced reward shaping (use the raw NASim reward)")
     parser.add_argument("--avoidlist-mask", action="store_true", dest="use_avoidlist_mask",
                         help="Enable the WORKING avoid-list: at action-selection, mask concrete "
                              "actions that failed >=2x this episode (decoupled from the LLM cache)")
@@ -1211,6 +1219,7 @@ def main():
         use_avoidlist=args.use_avoidlist,
         use_avoidlist_mask=args.use_avoidlist_mask,
         use_compact_prompt=args.use_compact_prompt,
+        use_reward_shaping=args.use_reward_shaping,
         history_len=args.history_len,
         llm_call_frequency=args.llm_call_freq,
         condition=args.condition,
